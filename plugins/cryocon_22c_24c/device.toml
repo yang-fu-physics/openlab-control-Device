@@ -1,0 +1,8 @@
+id = "cryocon_22c_24c"
+name = "Cryo-con 22C / 24C Temperature Controller"
+version = "0.1.0b1"
+api_version = "1.1"
+core_requires = ">=0.13.3,<0.14"
+backend = "backend:Cryocon22C24CController"
+kinds = ["temperature"]
+dependencies = []

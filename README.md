@@ -13,6 +13,12 @@ closed until identity checks, bounded protocol timeouts, fresh readback, hold,
 and instrument-side safety validation have been implemented. The monitor
 example is read-only.
 
+`plugins/cryocon_22c_24c/` is the first model-specific Beta plugin. It uses one
+USB VISA session, controls input B through Loop 1, monitors input A, and reports
+actual heater readback (`%FS`) and range as auxiliary values. Its PID values are
+intentionally not guessed: installation requires site-validated `pid_zones` in
+the main config.
+
 ## Manual offline installation
 
 1. Review one plugin folder and its wheel hashes.

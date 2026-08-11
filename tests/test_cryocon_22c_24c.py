@@ -1,0 +1,342 @@
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+import sys
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CORE_SRC = ROOT.parent / "OpenLabControl" / "src"
+if CORE_SRC.is_dir():
+    sys.path.insert(0, str(CORE_SRC))
+sys.path.insert(0, str(ROOT / "plugins"))
+
+from labcontrol.devices.base import (  # noqa: E402
+    DeviceError,
+    DevicePlugin,
+    SafetyViolation,
+)
+from labcontrol.extensions.loading import load_source_object  # noqa: E402
+from labcontrol.models import DeviceKind  # noqa: E402
+from cryocon_22c_24c.backend import Cryocon22C24CController  # noqa: E402
+from cryocon_22c_24c.cryocon_22c_24c import STATUS_QUERY  # noqa: E402
+
+
+def _status(
+    *,
+    temperature_a: str = "20.0",
+    alarm_a: str = "--",
+    temperature_b: str = "4.2",
+    alarm_b: str = "--",
+    setpoint: str = "4.0",
+    rate: str = "1.0",
+    ramping: str = "OFF",
+    heater_range: str = "LOW",
+    heater_output: str = "12.5",
+    loop_error: str = "--Htr OK--",
+    loop_type: str = "RAMPP",
+    source: str = "B",
+    control: str = "ON",
+) -> str:
+    return ";".join(
+        (
+            temperature_a,
+            "K",
+            alarm_a,
+            temperature_b,
+            "K",
+            alarm_b,
+            setpoint,
+            rate,
+            ramping,
+            heater_range,
+            heater_output,
+            loop_error,
+            loop_type,
+            source,
+            control,
+        )
+    )
+
+
+class FakeTransport:
+    def __init__(
+        self,
+        *,
+        model: str = "24C",
+        status: str | None = None,
+        mismatch_parameter: str = "",
+    ) -> None:
+        self.model = model
+        self.status = _status() if status is None else status
+        self.mismatch_parameter = mismatch_parameter
+        self.commands: list[str] = []
+        self.closed = False
+
+    def query(self, command: str) -> str:
+        self.commands.append(command)
+        if command == "*IDN?":
+            return f"Cryo-con,{self.model},204683,1.01A"
+        if command == STATUS_QUERY:
+            return self.status
+        if command == "INPUT B:TEMPERATURE?;UNITS?;ALARM?":
+            return "5.5;K;--"
+        operation = command.removeprefix("LOOP 1:")
+        parameter = operation.split(" ", 1)[0]
+        if ";" in command and command.endswith(f";{parameter}?"):
+            requested = operation.split(" ", 1)[1].split(";", 1)[0]
+            if parameter == self.mismatch_parameter:
+                return "999"
+            return requested
+        raise AssertionError(f"Unexpected command: {command}")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _config(*, zones=None):
+    configured_zones = (
+        [
+            {
+                "temperature": 10.0,
+                "p_gain": 1.0,
+                "i_gain": 4.0,
+                "d_gain": 1.0,
+                "heater_range": "LOW",
+            },
+            {
+                "temperature": 400.0,
+                "p_gain": 2.0,
+                "i_gain": 8.0,
+                "d_gain": 2.0,
+                "heater_range": "MID",
+            },
+        ]
+        if zones is None
+        else zones
+    )
+    return SimpleNamespace(
+        id="temperature",
+        display_name="Temperature",
+        kind=DeviceKind.TEMPERATURE,
+        unit="K",
+        min_value=2.0,
+        max_value=400.0,
+        max_rate_per_minute=10.0,
+        operation_timeout_seconds=10.0,
+        extras={
+            "address": "USB0::0x1234::0x5678::SERIAL::INSTR",
+            "io_timeout_seconds": 1.0,
+            "monitor_a_max_temperature": 320.0,
+            "hold_rate_per_minute": 1.0,
+            "pid_zones": configured_zones,
+        },
+    )
+
+
+class CryoconControllerTests(unittest.TestCase):
+    def _controller(
+        self,
+        transport: FakeTransport,
+        *,
+        config=None,
+    ) -> Cryocon22C24CController:
+        return Cryocon22C24CController(
+            _config() if config is None else config,
+            transport_factory=lambda _address, _timeout: transport,
+        )
+
+    def test_connect_is_read_only_and_accepts_22c_or_24c(self) -> None:
+        for model in ("22C", "24C"):
+            with self.subTest(model=model):
+                transport = FakeTransport(model=model)
+                controller = self._controller(transport)
+                asyncio.run(controller.connect())
+                self.assertEqual(transport.commands, ["*IDN?", STATUS_QUERY])
+                asyncio.run(controller.disconnect())
+                self.assertTrue(transport.closed)
+                self.assertFalse(
+                    any("CONTROL " in item or "STOP" in item for item in transport.commands)
+                )
+
+    def test_core_loader_can_import_backend_with_relative_instrument_module(
+        self,
+    ) -> None:
+        backend = load_source_object(
+            ROOT / "plugins" / "cryocon_22c_24c",
+            "backend:Cryocon22C24CController",
+            "cryocon_device_repository_test",
+        )
+        self.assertTrue(issubclass(backend, DevicePlugin))
+
+    def test_poll_returns_b_as_primary_and_a_heater_as_metrics(self) -> None:
+        transport = FakeTransport(
+            status=_status(
+                temperature_a="25.125",
+                temperature_b="6.75",
+                setpoint="7.0",
+                rate="2.5",
+                ramping="ON",
+                heater_range="MID",
+                heater_output="17.25",
+            )
+        )
+        controller = self._controller(transport)
+        asyncio.run(controller.connect())
+        snapshot = asyncio.run(controller.poll())
+
+        self.assertEqual(snapshot.current, 6.75)
+        self.assertEqual(snapshot.target, 7.0)
+        self.assertEqual(snapshot.rate_per_minute, 2.5)
+        self.assertFalse(snapshot.instrument_stable)
+        self.assertEqual(
+            {metric.key: metric.value for metric in snapshot.metrics},
+            {
+                "second_stage": 25.125,
+                "heater_output": 17.25,
+                "heater_range": "MID",
+            },
+        )
+        heater = next(
+            metric for metric in snapshot.metrics if metric.key == "heater_output"
+        )
+        self.assertEqual(heater.display_name, "Heater Output")
+        self.assertEqual(heater.unit, "%FS")
+
+    def test_set_target_selects_pid_zone_and_confirms_every_write(self) -> None:
+        transport = FakeTransport()
+        controller = self._controller(transport)
+        asyncio.run(controller.connect())
+        transport.commands.clear()
+
+        asyncio.run(controller.set_target(50.0, 3.0))
+
+        self.assertEqual(
+            transport.commands,
+            [
+                "LOOP 1:PGAIN 2;PGAIN?",
+                "LOOP 1:IGAIN 8;IGAIN?",
+                "LOOP 1:DGAIN 2;DGAIN?",
+                "LOOP 1:RANGE MID;RANGE?",
+                "LOOP 1:RATE 3;RATE?",
+                "LOOP 1:SETPT 50;SETPT?",
+            ],
+        )
+        self.assertTrue(all(";" in command for command in transport.commands))
+
+    def test_pid_temperature_is_a_strict_upper_boundary(self) -> None:
+        transport = FakeTransport()
+        controller = self._controller(transport)
+        asyncio.run(controller.connect())
+
+        transport.commands.clear()
+        asyncio.run(controller.set_target(9.999, 1.0))
+        self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 1;PGAIN?")
+
+        transport.commands.clear()
+        asyncio.run(controller.set_target(10.0, 1.0))
+        self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 2;PGAIN?")
+
+        transport.commands.clear()
+        asyncio.run(controller.set_target(400.0, 1.0))
+        self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 2;PGAIN?")
+
+    def test_hold_uses_fresh_b_reading_and_never_turns_output_off(self) -> None:
+        transport = FakeTransport()
+        controller = self._controller(transport)
+        asyncio.run(controller.connect())
+        transport.commands.clear()
+
+        asyncio.run(controller.hold())
+
+        self.assertEqual(
+            transport.commands[0],
+            "INPUT B:TEMPERATURE?;UNITS?;ALARM?",
+        )
+        self.assertEqual(transport.commands[-1], "LOOP 1:SETPT 5.5;SETPT?")
+        self.assertFalse(
+            any("CONTROL OFF" in item or "STOP" in item for item in transport.commands)
+        )
+
+    def test_sensor_alarm_or_input_a_high_limit_is_immediate_safety_error(self) -> None:
+        for response, code in (
+            (_status(alarm_b="SF"), "CRYOCON_SENSOR_ALARM"),
+            (_status(temperature_a="321"), "CRYOCON_INPUT_A_HIGH_LIMIT"),
+            (_status(loop_error="-Overtemp-"), "CRYOCON_HEATER_FAULT"),
+        ):
+            with self.subTest(code=code):
+                controller = self._controller(FakeTransport(status=response))
+                with self.assertRaises(SafetyViolation) as captured:
+                    asyncio.run(controller.connect())
+                self.assertEqual(captured.exception.code, code)
+
+    def test_write_readback_mismatch_has_uncertain_result_and_is_not_replayed(self) -> None:
+        transport = FakeTransport(mismatch_parameter="IGAIN")
+        controller = self._controller(transport)
+        asyncio.run(controller.connect())
+        transport.commands.clear()
+
+        with self.assertRaises(DeviceError) as captured:
+            asyncio.run(controller.set_target(5.0, 1.0))
+
+        self.assertEqual(captured.exception.code, "DEVICE_WRITE_RESULT_UNKNOWN")
+        self.assertEqual(
+            transport.commands,
+            [
+                "LOOP 1:PGAIN 1;PGAIN?",
+                "LOOP 1:IGAIN 4;IGAIN?",
+            ],
+        )
+
+    def test_local_limits_and_pid_table_are_fail_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "pid_zones"):
+            self._controller(FakeTransport(), config=_config(zones=[]))
+
+        controller = self._controller(FakeTransport())
+        asyncio.run(controller.connect())
+        with self.assertRaises(SafetyViolation):
+            asyncio.run(controller.set_target(401.0, 1.0))
+        with self.assertRaises(SafetyViolation):
+            asyncio.run(controller.set_target(4.0, 10.1))
+
+        short_budget = _config()
+        short_budget.operation_timeout_seconds = 7.5
+        with self.assertRaisesRegex(ValueError, "seven VISA I/O timeouts"):
+            self._controller(FakeTransport(), config=short_budget)
+
+    def test_pid_gains_accept_instrument_zero_boundary(self) -> None:
+        controller = self._controller(
+            FakeTransport(),
+            config=_config(
+                zones=[
+                    {
+                        "temperature": 400.0,
+                        "p_gain": 0.0,
+                        "i_gain": 0.0,
+                        "d_gain": 0.0,
+                    }
+                ]
+            ),
+        )
+        self.assertEqual(controller._pid_zones[0].p_gain, 0.0)
+
+        with self.assertRaisesRegex(ValueError, "0–1000"):
+            self._controller(
+                FakeTransport(),
+                config=_config(
+                    zones=[
+                        {
+                            "temperature": 400.0,
+                            "p_gain": -0.1,
+                            "i_gain": 0.0,
+                            "d_gain": 0.0,
+                        }
+                    ]
+                ),
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
