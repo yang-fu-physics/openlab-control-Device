@@ -8,14 +8,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RepositoryLayoutTests(unittest.TestCase):
-    def test_every_plugin_has_manifest_and_backend(self) -> None:
-        plugin_paths = sorted((ROOT / "plugins").iterdir())
-        self.assertTrue(plugin_paths)
-        for plugin_path in plugin_paths:
-            with self.subTest(plugin=plugin_path.name):
-                self.assertTrue((plugin_path / "device.toml").is_file())
-                self.assertTrue((plugin_path / "backend.py").is_file())
-                self.assertFalse((plugin_path / "runtime.json").exists())
+    def test_every_instrument_has_manifest_and_backend(self) -> None:
+        self.assertFalse((ROOT / "plugins").exists())
+        instrument_paths = sorted((ROOT / "instruments").iterdir())
+        self.assertTrue(instrument_paths)
+        for instrument_path in instrument_paths:
+            with self.subTest(instrument=instrument_path.name):
+                self.assertTrue((instrument_path / "instrument.toml").is_file())
+                self.assertTrue((instrument_path / "backend.py").is_file())
+                self.assertFalse((instrument_path / "device.toml").exists())
+                self.assertFalse((instrument_path / "runtime.json").exists())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,13 @@
+id = "cryocon_22c_24c"
+name = "Cryo-con 22C / 24C Temperature Controller"
+version = "0.1.0b3"
+api_version = "1.2"
+core_requires = ">=0.15,<0.16"
+backend = "backend:Cryocon22C24CController"
+kinds = ["temperature"]
+dependencies = []
+
+[discovery]
+identity_pattern = "(?i)cryo-?con.*(?:22c|24c)"
+primary_reading = "temp_b"
+monitor_readings = ["temp_a"]

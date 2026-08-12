@@ -1,4 +1,4 @@
-"""OpenLab Control Device Plugin：Cryo-con 22C/24C 温度控制器。"""
+"""OpenLab Control System Instrument：Cryo-con 22C/24C 温度控制器。"""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from labcontrol.devices.base import DeviceError, DevicePlugin, SafetyViolation
-from labcontrol.models import DeviceActivity, DeviceMetric, DeviceSnapshot
+from labcontrol.instruments.base import InstrumentError, SystemInstrument, SafetyViolation
+from labcontrol.models import InstrumentActivity, InstrumentMetric, InstrumentSnapshot
 
 from . import cryocon_22c_24c as instrument
 
@@ -25,10 +25,10 @@ class PIDZone:
     heater_range: str | None = None
 
 
-class Cryocon22C24CController(DevicePlugin):
+class Cryocon22C24CController(SystemInstrument):
     """以 B 为主温度、A 为只读二级冷头温度的单连接控制器。"""
 
-    api_version = "1.1"
+    api_version = "1.2"
 
     def __init__(
         self,
@@ -42,8 +42,23 @@ class Cryocon22C24CController(DevicePlugin):
         super().__init__(config, simulation_speed)
         self._transport_factory = transport_factory
         self._transport: instrument.QueryTransport | None = None
-        self._last_full_snapshot: DeviceSnapshot | None = None
-        self._address = str(config.extras.get("address", "")).strip()
+        self._last_full_snapshot: InstrumentSnapshot | None = None
+        self._address = config.address
+        primary_reading = str(
+            config.extras.get("primary_reading", "temp_b")
+        ).strip().casefold()
+        monitor_readings = tuple(
+            str(value).strip().casefold()
+            for value in config.extras.get(
+                "monitor_readings",
+                ["temp_a"],
+            )
+        )
+        if primary_reading != "temp_b" or "temp_a" not in monitor_readings:
+            raise ValueError(
+                "cryocon_22c_24c requires temp_b as primary_reading and "
+                "temp_a in monitor_readings"
+            )
         self._io_timeout = self._positive_number(
             config.extras.get("io_timeout_seconds", 2.0),
             "io_timeout_seconds",
@@ -114,7 +129,7 @@ class Cryocon22C24CController(DevicePlugin):
         if transport is not None:
             transport.close()
 
-    async def poll(self) -> DeviceSnapshot:
+    async def poll(self) -> InstrumentSnapshot:
         """即时读取 B 主温度，以及 A、加热输出和量程附加读数。"""
 
         transport = self._require_transport()
@@ -127,15 +142,15 @@ class Cryocon22C24CController(DevicePlugin):
                 self._address,
             ) from exc
         except Exception as exc:
-            raise DeviceError(
+            raise InstrumentError(
                 f"Cryo-con communication failed: {exc}",
                 "CRYOCON_COMMUNICATION_FAILED",
                 self._address,
             ) from exc
         self._validate_status(status)
         ramping = status.ramping.strip().upper() == "ON"
-        snapshot = DeviceSnapshot(
-            device_id=self.config.id,
+        snapshot = InstrumentSnapshot(
+            instrument_id=self.config.id,
             display_name=self.config.display_name,
             kind=self.config.kind,
             timestamp=time.monotonic(),
@@ -145,43 +160,40 @@ class Cryocon22C24CController(DevicePlugin):
             target=status.setpoint,
             rate_per_minute=status.rate,
             activity=(
-                DeviceActivity.MOVING
+                InstrumentActivity.MOVING
                 if ramping
-                else DeviceActivity.HOLDING
+                else InstrumentActivity.HOLDING
             ),
             instrument_stable=not ramping,
-            metrics=(
-                DeviceMetric(
-                    "second_stage",
+            metrics={
+                "temp_a": InstrumentMetric(
                     "2nd Stage",
                     status.temperature_a,
                     "K",
                     3,
                 ),
-                DeviceMetric(
-                    "heater_output",
+                "heater_output": InstrumentMetric(
                     "Heater Output",
                     status.heater_output_percent,
                     "%FS",
                     2,
                 ),
-                DeviceMetric(
-                    "heater_range",
+                "heater_range": InstrumentMetric(
                     "Range",
                     status.heater_range.strip().upper(),
                 ),
-            ),
+            },
         )
         self._last_full_snapshot = snapshot
         return snapshot
 
-    async def poll_measurement(self) -> DeviceSnapshot:
+    async def poll_measurement(self) -> InstrumentSnapshot:
         """测量行只向仪表查询 TempB，其余状态留给常规安全轮询。"""
 
         transport = self._require_transport()
         previous = self._last_full_snapshot
         if previous is None:
-            raise DeviceError(
+            raise InstrumentError(
                 "Cryo-con has no validated full status snapshot",
                 "CRYOCON_STATUS_UNAVAILABLE",
                 self._address,
@@ -197,7 +209,7 @@ class Cryocon22C24CController(DevicePlugin):
                 self._address,
             ) from exc
         except Exception as exc:
-            raise DeviceError(
+            raise InstrumentError(
                 f"Cryo-con measurement read failed: {exc}",
                 "CRYOCON_COMMUNICATION_FAILED",
                 self._address,
@@ -207,10 +219,10 @@ class Cryocon22C24CController(DevicePlugin):
             timestamp=time.monotonic(),
             current=temperature_b,
             # 保留固定 Schema，但不把上一轮 A/加热值伪装成本次同步测量值。
-            metrics=tuple(
-                replace(metric, value=None)
-                for metric in previous.metrics
-            ),
+            metrics={
+                key: replace(metric, value=None)
+                for key, metric in previous.metrics.items()
+            },
         )
 
     async def set_target(
@@ -239,9 +251,9 @@ class Cryocon22C24CController(DevicePlugin):
                 self._address,
             ) from exc
         except Exception as exc:
-            raise DeviceError(
+            raise InstrumentError(
                 f"Cryo-con communication failed during hold: {exc}",
-                "DEVICE_WRITE_RESULT_UNKNOWN",
+                "INSTRUMENT_WRITE_RESULT_UNKNOWN",
                 self._address,
             ) from exc
         self._validate_channel("B", current, unit, alarm)
@@ -285,9 +297,9 @@ class Cryocon22C24CController(DevicePlugin):
                         requested,
                     )
         except Exception as exc:
-            raise DeviceError(
+            raise InstrumentError(
                 f"Cryo-con write or readback confirmation failed: {exc}",
-                "DEVICE_WRITE_RESULT_UNKNOWN",
+                "INSTRUMENT_WRITE_RESULT_UNKNOWN",
                 f"{self._address}:{parameter}",
             ) from exc
 
@@ -404,7 +416,7 @@ class Cryocon22C24CController(DevicePlugin):
 
     def _require_transport(self) -> instrument.QueryTransport:
         if self._transport is None:
-            raise DeviceError(
+            raise InstrumentError(
                 "Cryo-con is not connected",
                 "CRYOCON_NOT_CONNECTED",
                 self._address,

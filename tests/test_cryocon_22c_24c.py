@@ -11,15 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE_SRC = ROOT.parent / "OpenLabControl" / "src"
 if CORE_SRC.is_dir():
     sys.path.insert(0, str(CORE_SRC))
-sys.path.insert(0, str(ROOT / "plugins"))
+sys.path.insert(0, str(ROOT / "instruments"))
 
-from labcontrol.devices.base import (  # noqa: E402
-    DeviceError,
-    DevicePlugin,
+from labcontrol.instruments.base import (  # noqa: E402
+    InstrumentError,
+    SystemInstrument,
     SafetyViolation,
 )
-from labcontrol.extensions.loading import load_source_object  # noqa: E402
-from labcontrol.models import DeviceKind  # noqa: E402
+from labcontrol.package_support.loading import load_source_object  # noqa: E402
+from labcontrol.models import InstrumentKind  # noqa: E402
 from cryocon_22c_24c.backend import Cryocon22C24CController  # noqa: E402
 from cryocon_22c_24c.cryocon_22c_24c import (  # noqa: E402
     MEASUREMENT_TEMPERATURE_QUERY,
@@ -127,14 +127,14 @@ def _config(*, zones=None):
     return SimpleNamespace(
         id="temperature",
         display_name="Temperature",
-        kind=DeviceKind.TEMPERATURE,
+        kind=InstrumentKind.TEMPERATURE,
         unit="K",
         min_value=2.0,
         max_value=400.0,
         max_rate_per_minute=10.0,
         operation_timeout_seconds=10.0,
+        address="USB0::0x1234::0x5678::SERIAL::INSTR",
         extras={
-            "address": "USB0::0x1234::0x5678::SERIAL::INSTR",
             "io_timeout_seconds": 1.0,
             "monitor_a_max_temperature": 320.0,
             "hold_rate_per_minute": 1.0,
@@ -172,11 +172,11 @@ class CryoconControllerTests(unittest.TestCase):
         self,
     ) -> None:
         backend = load_source_object(
-            ROOT / "plugins" / "cryocon_22c_24c",
+            ROOT / "instruments" / "cryocon_22c_24c",
             "backend:Cryocon22C24CController",
-            "cryocon_device_repository_test",
+            "cryocon_instrument_repository_test",
         )
-        self.assertTrue(issubclass(backend, DevicePlugin))
+        self.assertTrue(issubclass(backend, SystemInstrument))
 
     def test_poll_returns_b_as_primary_and_a_heater_as_metrics(self) -> None:
         transport = FakeTransport(
@@ -199,16 +199,17 @@ class CryoconControllerTests(unittest.TestCase):
         self.assertEqual(snapshot.rate_per_minute, 2.5)
         self.assertFalse(snapshot.instrument_stable)
         self.assertEqual(
-            {metric.key: metric.value for metric in snapshot.metrics},
             {
-                "second_stage": 25.125,
+                key: metric.value
+                for key, metric in snapshot.metrics.items()
+            },
+            {
+                "temp_a": 25.125,
                 "heater_output": 17.25,
                 "heater_range": "MID",
             },
         )
-        heater = next(
-            metric for metric in snapshot.metrics if metric.key == "heater_output"
-        )
+        heater = snapshot.metrics["heater_output"]
         self.assertEqual(heater.display_name, "Heater Output")
         self.assertEqual(heater.unit, "%FS")
 
@@ -225,9 +226,12 @@ class CryoconControllerTests(unittest.TestCase):
         self.assertEqual(snapshot.target, 4.0)
         self.assertEqual(snapshot.rate_per_minute, 1.0)
         self.assertEqual(
-            {metric.key: metric.value for metric in snapshot.metrics},
             {
-                "second_stage": None,
+                key: metric.value
+                for key, metric in snapshot.metrics.items()
+            },
+            {
+                "temp_a": None,
                 "heater_output": None,
                 "heater_range": None,
             },
@@ -306,10 +310,10 @@ class CryoconControllerTests(unittest.TestCase):
         asyncio.run(controller.connect())
         transport.commands.clear()
 
-        with self.assertRaises(DeviceError) as captured:
+        with self.assertRaises(InstrumentError) as captured:
             asyncio.run(controller.set_target(5.0, 1.0))
 
-        self.assertEqual(captured.exception.code, "DEVICE_WRITE_RESULT_UNKNOWN")
+        self.assertEqual(captured.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
         self.assertEqual(
             transport.commands,
             [
