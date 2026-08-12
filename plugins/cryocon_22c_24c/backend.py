@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import time
 from collections.abc import Callable, Mapping
@@ -42,6 +42,7 @@ class Cryocon22C24CController(DevicePlugin):
         super().__init__(config, simulation_speed)
         self._transport_factory = transport_factory
         self._transport: instrument.QueryTransport | None = None
+        self._last_full_snapshot: DeviceSnapshot | None = None
         self._address = str(config.extras.get("address", "")).strip()
         self._io_timeout = self._positive_number(
             config.extras.get("io_timeout_seconds", 2.0),
@@ -109,6 +110,7 @@ class Cryocon22C24CController(DevicePlugin):
         """只关闭通讯句柄；不关闭输出、不更改设定值或 Loop 类型。"""
 
         transport, self._transport = self._transport, None
+        self._last_full_snapshot = None
         if transport is not None:
             transport.close()
 
@@ -132,7 +134,7 @@ class Cryocon22C24CController(DevicePlugin):
             ) from exc
         self._validate_status(status)
         ramping = status.ramping.strip().upper() == "ON"
-        return DeviceSnapshot(
+        snapshot = DeviceSnapshot(
             device_id=self.config.id,
             display_name=self.config.display_name,
             kind=self.config.kind,
@@ -168,6 +170,46 @@ class Cryocon22C24CController(DevicePlugin):
                     "Range",
                     status.heater_range.strip().upper(),
                 ),
+            ),
+        )
+        self._last_full_snapshot = snapshot
+        return snapshot
+
+    async def poll_measurement(self) -> DeviceSnapshot:
+        """测量行只向仪表查询 TempB，其余状态留给常规安全轮询。"""
+
+        transport = self._require_transport()
+        previous = self._last_full_snapshot
+        if previous is None:
+            raise DeviceError(
+                "Cryo-con has no validated full status snapshot",
+                "CRYOCON_STATUS_UNAVAILABLE",
+                self._address,
+            )
+        try:
+            temperature_b = instrument.read_measurement_temperature_b(
+                transport
+            )
+        except instrument.CryoconProtocolError as exc:
+            raise SafetyViolation(
+                str(exc),
+                "CRYOCON_INVALID_READBACK",
+                self._address,
+            ) from exc
+        except Exception as exc:
+            raise DeviceError(
+                f"Cryo-con measurement read failed: {exc}",
+                "CRYOCON_COMMUNICATION_FAILED",
+                self._address,
+            ) from exc
+        return replace(
+            previous,
+            timestamp=time.monotonic(),
+            current=temperature_b,
+            # 保留固定 Schema，但不把上一轮 A/加热值伪装成本次同步测量值。
+            metrics=tuple(
+                replace(metric, value=None)
+                for metric in previous.metrics
             ),
         )
 

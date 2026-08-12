@@ -21,7 +21,10 @@ from labcontrol.devices.base import (  # noqa: E402
 from labcontrol.extensions.loading import load_source_object  # noqa: E402
 from labcontrol.models import DeviceKind  # noqa: E402
 from cryocon_22c_24c.backend import Cryocon22C24CController  # noqa: E402
-from cryocon_22c_24c.cryocon_22c_24c import STATUS_QUERY  # noqa: E402
+from cryocon_22c_24c.cryocon_22c_24c import (  # noqa: E402
+    MEASUREMENT_TEMPERATURE_QUERY,
+    STATUS_QUERY,
+)
 
 
 def _status(
@@ -67,10 +70,12 @@ class FakeTransport:
         *,
         model: str = "24C",
         status: str | None = None,
+        measurement_temperature: str = "6.125",
         mismatch_parameter: str = "",
     ) -> None:
         self.model = model
         self.status = _status() if status is None else status
+        self.measurement_temperature = measurement_temperature
         self.mismatch_parameter = mismatch_parameter
         self.commands: list[str] = []
         self.closed = False
@@ -81,6 +86,8 @@ class FakeTransport:
             return f"Cryo-con,{self.model},204683,1.01A"
         if command == STATUS_QUERY:
             return self.status
+        if command == MEASUREMENT_TEMPERATURE_QUERY:
+            return self.measurement_temperature
         if command == "INPUT B:TEMPERATURE?;UNITS?;ALARM?":
             return "5.5;K;--"
         operation = command.removeprefix("LOOP 1:")
@@ -204,6 +211,27 @@ class CryoconControllerTests(unittest.TestCase):
         )
         self.assertEqual(heater.display_name, "Heater Output")
         self.assertEqual(heater.unit, "%FS")
+
+    def test_measurement_poll_queries_only_temp_b(self) -> None:
+        transport = FakeTransport(measurement_temperature="6.875 K")
+        controller = self._controller(transport)
+        asyncio.run(controller.connect())
+        transport.commands.clear()
+
+        snapshot = asyncio.run(controller.poll_measurement())
+
+        self.assertEqual(transport.commands, [MEASUREMENT_TEMPERATURE_QUERY])
+        self.assertEqual(snapshot.current, 6.875)
+        self.assertEqual(snapshot.target, 4.0)
+        self.assertEqual(snapshot.rate_per_minute, 1.0)
+        self.assertEqual(
+            {metric.key: metric.value for metric in snapshot.metrics},
+            {
+                "second_stage": None,
+                "heater_output": None,
+                "heater_range": None,
+            },
+        )
 
     def test_set_target_selects_pid_zone_and_confirms_every_write(self) -> None:
         transport = FakeTransport()

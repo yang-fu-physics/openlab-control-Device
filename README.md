@@ -17,7 +17,8 @@ example is read-only.
 USB VISA session, controls input B through Loop 1, monitors input A, and reports
 actual heater readback (`%FS`) and range as auxiliary values. Its PID values are
 intentionally not guessed: installation requires site-validated `pid_zones` in
-the main config.
+the main config. Full control polling keeps all safety and monitoring reads;
+measurement-row sampling sends only `INPUT B:TEMPERATURE?`.
 
 ## Manual offline installation
 

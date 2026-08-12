@@ -88,6 +88,8 @@ STATUS_QUERY = (
     ":CONTROL?"
 )
 
+MEASUREMENT_TEMPERATURE_QUERY = "INPUT B:TEMPERATURE?"
+
 
 def identify(transport: QueryTransport) -> tuple[str, str, str, str]:
     """读取并拆分标准身份字符串。"""
@@ -140,6 +142,15 @@ def read_temperature_b(
             f"Input B query returned {len(parts)} fields instead of 3: {response!r}"
         )
     return _number(parts[0], "input B temperature"), parts[1], parts[2]
+
+
+def read_measurement_temperature_b(transport: QueryTransport) -> float:
+    """只读取写实验数据所需的 B 温度，不附带状态或其他通道查询。"""
+
+    return _number(
+        transport.query(MEASUREMENT_TEMPERATURE_QUERY),
+        "input B measurement temperature",
+    )
 
 
 def write_number_and_readback(
