@@ -51,14 +51,24 @@ class Cryocon22C24CController(SystemInstrument):
             str(value).strip().casefold()
             for value in config.extras.get(
                 "monitor_readings",
-                ["temp_a"],
+                ["temp_a", "heater_output", "heater_range"],
             )
         )
-        if primary_reading != "temp_b" or "temp_a" not in monitor_readings:
+        if primary_reading != "temp_b":
             raise ValueError(
-                "cryocon_22c_24c requires temp_b as primary_reading and "
-                "temp_a in monitor_readings"
+                "cryocon_22c_24c requires temp_b as primary_reading"
             )
+        unknown_monitor_readings = set(monitor_readings) - {
+            "temp_a",
+            "heater_output",
+            "heater_range",
+        }
+        if unknown_monitor_readings:
+            raise ValueError(
+                "cryocon_22c_24c has unknown monitor_readings: "
+                + ", ".join(sorted(unknown_monitor_readings))
+            )
+        self._monitor_readings = frozenset(monitor_readings)
         self._io_timeout = self._positive_number(
             config.extras.get("io_timeout_seconds", 2.0),
             "io_timeout_seconds",
@@ -149,6 +159,24 @@ class Cryocon22C24CController(SystemInstrument):
             ) from exc
         self._validate_status(status)
         ramping = status.ramping.strip().upper() == "ON"
+        metrics = {
+            "temp_a": InstrumentMetric(
+                "2nd Stage",
+                status.temperature_a,
+                "K",
+                3,
+            ),
+            "heater_output": InstrumentMetric(
+                "Heater Output",
+                status.heater_output_percent,
+                "%FS",
+                2,
+            ),
+            "heater_range": InstrumentMetric(
+                "Range",
+                status.heater_range.strip().upper(),
+            ),
+        }
         snapshot = InstrumentSnapshot(
             instrument_id=self.config.id,
             display_name=self.config.display_name,
@@ -166,22 +194,9 @@ class Cryocon22C24CController(SystemInstrument):
             ),
             instrument_stable=not ramping,
             metrics={
-                "temp_a": InstrumentMetric(
-                    "2nd Stage",
-                    status.temperature_a,
-                    "K",
-                    3,
-                ),
-                "heater_output": InstrumentMetric(
-                    "Heater Output",
-                    status.heater_output_percent,
-                    "%FS",
-                    2,
-                ),
-                "heater_range": InstrumentMetric(
-                    "Range",
-                    status.heater_range.strip().upper(),
-                ),
+                key: metric
+                for key, metric in metrics.items()
+                if key in self._monitor_readings
             },
         )
         self._last_full_snapshot = snapshot

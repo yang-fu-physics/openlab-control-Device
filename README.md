@@ -29,7 +29,9 @@ instruments/<id>/
 1. 审查目标目录、`instrument.toml` 和所有额外依赖哈希。
 2. 把完整目录复制到 `OpenLabControl/system_instruments/<instrument-id>/`。
 3. 运行 `tools/instrument_scanner.py`，人工确认物理地址、System Instrument、主读数和
-   Monitor 读数，保存 `configs/instruments.local.toml`。
+   Monitor 读数，保存 `configs/instruments.local.toml`。唯一匹配的 System Instrument 会
+   自动选择；主读数和 Monitor 读数的英文名称来自 `instrument.toml` 中的
+   `[discovery.reading_labels]`。
 4. 在 `configs/site.local.toml` 的 `[[instruments]]` 中设置
    `backend = "<instrument-id>"`、`resource = "<资源 ID>"`、上下限、最大速率和超时。
 5. 重启 OpenLab Control，核对类型、ID、版本、绝对路径和内容指纹后确认。

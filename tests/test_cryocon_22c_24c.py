@@ -103,7 +103,7 @@ class FakeTransport:
         self.closed = True
 
 
-def _config(*, zones=None):
+def _config(*, zones=None, monitor_readings=None):
     configured_zones = (
         [
             {
@@ -138,6 +138,11 @@ def _config(*, zones=None):
             "io_timeout_seconds": 1.0,
             "monitor_a_max_temperature": 320.0,
             "hold_rate_per_minute": 1.0,
+            "monitor_readings": (
+                ["temp_a", "heater_output", "heater_range"]
+                if monitor_readings is None
+                else monitor_readings
+            ),
             "pid_zones": configured_zones,
         },
     )
@@ -212,6 +217,16 @@ class CryoconControllerTests(unittest.TestCase):
         heater = snapshot.metrics["heater_output"]
         self.assertEqual(heater.display_name, "Heater Output")
         self.assertEqual(heater.unit, "%FS")
+
+    def test_monitor_reading_selection_controls_returned_metrics(self) -> None:
+        transport = FakeTransport()
+        controller = self._controller(
+            transport,
+            config=_config(monitor_readings=["heater_output"]),
+        )
+        asyncio.run(controller.connect())
+        snapshot = asyncio.run(controller.poll())
+        self.assertEqual(tuple(snapshot.metrics), ("heater_output",))
 
     def test_measurement_poll_queries_only_temp_b(self) -> None:
         transport = FakeTransport(measurement_temperature="6.875 K")

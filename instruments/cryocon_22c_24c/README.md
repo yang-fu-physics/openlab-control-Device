@@ -75,11 +75,12 @@ identity = "Cryo-con,24C,..."
 purpose = "system"
 system_instrument = "cryocon_22c_24c"
 primary_reading = "temp_b"
-monitor_readings = ["temp_a"]
+monitor_readings = ["temp_a", "heater_output", "heater_range"]
 ```
 
-TempB 是主温度；TempA、加热输出和量程由同一个快照的 `metrics` 字典返回，不另开第二个
-USB 会话。
+TempB 是主温度；TempA、加热输出和量程默认全部选中，由同一个快照的 `metrics` 字典返回，
+不另开第二个 USB 会话。扫描器中的 Monitor readings 复选框决定哪些附加值进入快照、界面和
+日志；无论是否显示，后端仍完整读取并校验 TempA、加热输出和量程。
 
 ## 运行规则
 
