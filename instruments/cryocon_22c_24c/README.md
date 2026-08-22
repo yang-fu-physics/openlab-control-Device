@@ -20,11 +20,8 @@ poll_interval_seconds = 1.0
 id = "temperature"
 display_name = "Temperature"
 kind = "temperature"
-role = "primary"
 control_enabled = true
-backend = "cryocon_22c_24c"
 resource = "cryocon_main"
-unit = "K"
 min_value = 2.0
 max_value = 400.0
 max_rate_per_minute = 10.0
@@ -63,10 +60,10 @@ d_gain = <VALIDATED_D>
 heater_range = "MID"
 ```
 
-物理地址和通道角色由扫描工具写入 `configs/instruments.local.toml`：
+物理地址、实现选择和辅助读数由扫描工具写入 `configs/instruments.local.toml`：
 
 ```toml
-schema_version = 1
+schema_version = 2
 
 [[resources]]
 id = "cryocon_main"
@@ -74,12 +71,11 @@ address = "USB0::...::INSTR"
 identity = "Cryo-con,24C,..."
 purpose = "system"
 system_instrument = "cryocon_22c_24c"
-primary_reading = "temp_b"
-monitor_readings = ["temp_a", "heater_output", "heater_range"]
+auxiliary_readings = ["temp_a", "heater_output", "heater_range"]
 ```
 
-TempB 是主温度；TempA、加热输出和量程默认全部选中，由同一个快照的 `metrics` 字典返回，
-不另开第二个 USB 会话。扫描器中的 Monitor readings 复选框决定哪些附加值进入快照、界面和
+TempB 是清单固定的主温度；TempA、加热输出和量程默认全部选中，由同一次读取的
+`auxiliary` 字典返回，不另开第二个 USB 会话。扫描器中的 Auxiliary readings 复选框决定哪些附加值进入界面和
 日志；无论是否显示，后端仍完整读取并校验 TempA、加热输出和量程。
 
 ## 运行规则

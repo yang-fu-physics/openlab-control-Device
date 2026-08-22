@@ -28,16 +28,15 @@ instruments/<id>/
 
 1. 审查目标目录、`instrument.toml` 和所有额外依赖哈希。
 2. 把完整目录复制到 `OpenLabControl/system_instruments/<instrument-id>/`。
-3. 运行 `tools/instrument_scanner.py`，人工确认物理地址、System Instrument、主读数和
-   Monitor 读数，保存 `configs/instruments.local.toml`。唯一匹配的 System Instrument 会
-   自动选择；主读数和 Monitor 读数的英文名称来自 `instrument.toml` 中的
-   `[discovery.reading_labels]`。
+3. 运行 `tools/instrument_scanner.py`，人工确认物理地址、System Instrument 和需要显示的
+   Auxiliary readings，保存 `configs/instruments.local.toml`。唯一匹配的实现会自动选择；
+   主读数固定显示，名称、单位和精度来自 `instrument.toml` 的 `[readings]`。
 4. 在 `configs/site.local.toml` 的 `[[instruments]]` 中设置
-   `backend = "<instrument-id>"`、`resource = "<资源 ID>"`、上下限、最大速率和超时。
+   `resource = "<资源 ID>"`、控制许可、上下限、最大速率和超时。
 5. 重启 OpenLab Control，核对类型、ID、版本、绝对路径和内容指纹后确认。
 
-复制目录本身不会连接仪表；只有现场配置实际选择该 backend 时才会启动。温度和磁场每种
-最多一个 `role = "primary"` 主控，其他实例默认只读。
+复制目录本身不会连接仪表；只有现场配置实际选择该资源时才会启动。温度和磁场每种最多
+一个 `control_enabled = true` 的实例，其他实例只读。
 
 PySide6、QtAwesome、packaging、PyVISA 和 typing_extensions 使用主框架锁定版本，不在各
 System Instrument 中重复安装。只有框架没有的额外依赖才需要 `requirements.lock` 和本地
@@ -46,14 +45,14 @@ wheel，安装过程完全离线。
 ## 编写原则
 
 - `__init__` 只保存配置，不连接仪表。
-- `connect()` 使用有限超时确认型号、固件、单位和关键状态，但不自动改变输出。
-- `poll()` 返回完整状态；需要时用 `poll_measurement()` 只读写测量行所需的即时主值。
+- `open()` 使用有限超时确认型号、固件、单位和关键状态，但不自动改变输出。
+- `read_status()` 返回普通字典；需要时用 `read_measurement()` 只读写测量行所需的即时主值。
 - `set_target()` 在发送前再次检查现场目标与速率边界，并在发送后回读确认。
 - `hold()` 使用同一次操作里的新鲜读数，不能使用缓存值、猜测值或零。
 - 写命令超时后不自动重发；重新连接后先读取实际状态。
-- `disconnect()` 可重复调用，并能清理只完成一半的初始化。
+- `close()` 可重复调用，并能清理只完成一半的初始化。
 - 同一通讯口只由一个实例持有；地址读取 `config.address`。
-- 辅助温度和加热状态放在有序 `metrics` 字典中；字典键是稳定 DAT 列名，监控卡会自动扩展。
+- 辅助温度和加热状态放在 `auxiliary` 字典中；名称、单位和精度只在清单声明一次。
 - 不同物理资源各有独立进程，连接和轮询会并发进行。
 
 ## 测试

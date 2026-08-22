@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
-import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from labcontrol.instruments.base import InstrumentError, SystemInstrument, SafetyViolation
-from labcontrol.models import InstrumentActivity, InstrumentMetric, InstrumentSnapshot
 
 from . import cryocon_22c_24c as instrument
 
@@ -28,47 +26,20 @@ class PIDZone:
 class Cryocon22C24CController(SystemInstrument):
     """以 B 为主温度、A 为只读二级冷头温度的单连接控制器。"""
 
-    api_version = "1.2"
-
     def __init__(
         self,
         config,
-        simulation_speed: float = 1.0,
         *,
         transport_factory: Callable[
             [str, float], instrument.QueryTransport
         ] = instrument.PyVisaTransport,
     ) -> None:
-        super().__init__(config, simulation_speed)
+        super().__init__(config)
         self._transport_factory = transport_factory
         self._transport: instrument.QueryTransport | None = None
-        self._last_full_snapshot: InstrumentSnapshot | None = None
+        self._status_validated = False
         self._address = config.address
-        primary_reading = str(
-            config.extras.get("primary_reading", "temp_b")
-        ).strip().casefold()
-        monitor_readings = tuple(
-            str(value).strip().casefold()
-            for value in config.extras.get(
-                "monitor_readings",
-                ["temp_a", "heater_output", "heater_range"],
-            )
-        )
-        if primary_reading != "temp_b":
-            raise ValueError(
-                "cryocon_22c_24c requires temp_b as primary_reading"
-            )
-        unknown_monitor_readings = set(monitor_readings) - {
-            "temp_a",
-            "heater_output",
-            "heater_range",
-        }
-        if unknown_monitor_readings:
-            raise ValueError(
-                "cryocon_22c_24c has unknown monitor_readings: "
-                + ", ".join(sorted(unknown_monitor_readings))
-            )
-        self._monitor_readings = frozenset(monitor_readings)
+        self._auxiliary_readings = frozenset(config.auxiliary_readings)
         self._io_timeout = self._positive_number(
             config.extras.get("io_timeout_seconds", 2.0),
             "io_timeout_seconds",
@@ -98,7 +69,7 @@ class Cryocon22C24CController(SystemInstrument):
             float(config.max_value),
         )
 
-    async def connect(self) -> None:
+    def open(self) -> None:
         """建立 VISA 会话并只读验证型号、传感器和 Loop 1 状态。"""
 
         if self._transport is not None:
@@ -124,22 +95,22 @@ class Cryocon22C24CController(SystemInstrument):
                 )
             self._transport = transport
             # 首次状态检查也不得修改已经手动完成的仪表设置。
-            await self.poll()
+            self.read_status()
         except Exception:
             self._transport = None
             if transport is not None:
                 transport.close()
             raise
 
-    async def disconnect(self) -> None:
+    def close(self) -> None:
         """只关闭通讯句柄；不关闭输出、不更改设定值或 Loop 类型。"""
 
         transport, self._transport = self._transport, None
-        self._last_full_snapshot = None
+        self._status_validated = False
         if transport is not None:
             transport.close()
 
-    async def poll(self) -> InstrumentSnapshot:
+    def read_status(self) -> dict[str, object]:
         """即时读取 B 主温度，以及 A、加热输出和量程附加读数。"""
 
         transport = self._require_transport()
@@ -159,55 +130,30 @@ class Cryocon22C24CController(SystemInstrument):
             ) from exc
         self._validate_status(status)
         ramping = status.ramping.strip().upper() == "ON"
-        metrics = {
-            "temp_a": InstrumentMetric(
-                "2nd Stage",
-                status.temperature_a,
-                "K",
-                3,
-            ),
-            "heater_output": InstrumentMetric(
-                "Heater Output",
-                status.heater_output_percent,
-                "%FS",
-                2,
-            ),
-            "heater_range": InstrumentMetric(
-                "Range",
-                status.heater_range.strip().upper(),
-            ),
+        auxiliary = {
+            "temp_a": status.temperature_a,
+            "heater_output": status.heater_output_percent,
+            "heater_range": status.heater_range.strip().upper(),
         }
-        snapshot = InstrumentSnapshot(
-            instrument_id=self.config.id,
-            display_name=self.config.display_name,
-            kind=self.config.kind,
-            timestamp=time.monotonic(),
-            connected=True,
-            unit=self.config.unit,
-            current=status.temperature_b,
-            target=status.setpoint,
-            rate_per_minute=status.rate,
-            activity=(
-                InstrumentActivity.MOVING
-                if ramping
-                else InstrumentActivity.HOLDING
-            ),
-            instrument_stable=not ramping,
-            metrics={
-                key: metric
-                for key, metric in metrics.items()
-                if key in self._monitor_readings
+        self._status_validated = True
+        return {
+            "value": status.temperature_b,
+            "target": status.setpoint,
+            "rate": status.rate,
+            "moving": ramping,
+            "ready": not ramping,
+            "auxiliary": {
+                key: value
+                for key, value in auxiliary.items()
+                if key in self._auxiliary_readings
             },
-        )
-        self._last_full_snapshot = snapshot
-        return snapshot
+        }
 
-    async def poll_measurement(self) -> InstrumentSnapshot:
+    def read_measurement(self) -> dict[str, object]:
         """测量行只向仪表查询 TempB，其余状态留给常规安全轮询。"""
 
         transport = self._require_transport()
-        previous = self._last_full_snapshot
-        if previous is None:
+        if not self._status_validated:
             raise InstrumentError(
                 "Cryo-con has no validated full status snapshot",
                 "CRYOCON_STATUS_UNAVAILABLE",
@@ -229,18 +175,9 @@ class Cryocon22C24CController(SystemInstrument):
                 "CRYOCON_COMMUNICATION_FAILED",
                 self._address,
             ) from exc
-        return replace(
-            previous,
-            timestamp=time.monotonic(),
-            current=temperature_b,
-            # 保留固定 Schema，但不把上一轮 A/加热值伪装成本次同步测量值。
-            metrics={
-                key: replace(metric, value=None)
-                for key, metric in previous.metrics.items()
-            },
-        )
+        return {"value": temperature_b}
 
-    async def set_target(
+    def set_target(
         self,
         value: float,
         rate_per_minute: float,
@@ -253,7 +190,7 @@ class Cryocon22C24CController(SystemInstrument):
         rate = self._bounded_rate(rate_per_minute)
         self._apply_pid_and_target(target, rate)
 
-    async def hold(self) -> None:
+    def hold(self) -> None:
         """以即时 B 读数作为目标；保持输出开启和 Ramp-P 控制。"""
 
         transport = self._require_transport()

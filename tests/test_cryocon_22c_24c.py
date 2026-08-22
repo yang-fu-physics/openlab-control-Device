@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -103,7 +102,7 @@ class FakeTransport:
         self.closed = True
 
 
-def _config(*, zones=None, monitor_readings=None):
+def _config(*, zones=None, auxiliary_readings=None):
     configured_zones = (
         [
             {
@@ -129,6 +128,12 @@ def _config(*, zones=None, monitor_readings=None):
         display_name="Temperature",
         kind=InstrumentKind.TEMPERATURE,
         unit="K",
+        main_reading="temp_b",
+        auxiliary_readings=tuple(
+            ["temp_a", "heater_output", "heater_range"]
+            if auxiliary_readings is None
+            else auxiliary_readings
+        ),
         min_value=2.0,
         max_value=400.0,
         max_rate_per_minute=10.0,
@@ -138,11 +143,6 @@ def _config(*, zones=None, monitor_readings=None):
             "io_timeout_seconds": 1.0,
             "monitor_a_max_temperature": 320.0,
             "hold_rate_per_minute": 1.0,
-            "monitor_readings": (
-                ["temp_a", "heater_output", "heater_range"]
-                if monitor_readings is None
-                else monitor_readings
-            ),
             "pid_zones": configured_zones,
         },
     )
@@ -165,9 +165,9 @@ class CryoconControllerTests(unittest.TestCase):
             with self.subTest(model=model):
                 transport = FakeTransport(model=model)
                 controller = self._controller(transport)
-                asyncio.run(controller.connect())
+                controller.open()
                 self.assertEqual(transport.commands, ["*IDN?", STATUS_QUERY])
-                asyncio.run(controller.disconnect())
+                controller.close()
                 self.assertTrue(transport.closed)
                 self.assertFalse(
                     any("CONTROL " in item or "STOP" in item for item in transport.commands)
@@ -183,7 +183,7 @@ class CryoconControllerTests(unittest.TestCase):
         )
         self.assertTrue(issubclass(backend, SystemInstrument))
 
-    def test_poll_returns_b_as_primary_and_a_heater_as_metrics(self) -> None:
+    def test_status_returns_main_and_auxiliary_values(self) -> None:
         transport = FakeTransport(
             status=_status(
                 temperature_a="25.125",
@@ -196,69 +196,49 @@ class CryoconControllerTests(unittest.TestCase):
             )
         )
         controller = self._controller(transport)
-        asyncio.run(controller.connect())
-        snapshot = asyncio.run(controller.poll())
+        controller.open()
+        reading = controller.read_status()
 
-        self.assertEqual(snapshot.current, 6.75)
-        self.assertEqual(snapshot.target, 7.0)
-        self.assertEqual(snapshot.rate_per_minute, 2.5)
-        self.assertFalse(snapshot.instrument_stable)
+        self.assertEqual(reading["value"], 6.75)
+        self.assertEqual(reading["target"], 7.0)
+        self.assertEqual(reading["rate"], 2.5)
+        self.assertFalse(reading["ready"])
         self.assertEqual(
-            {
-                key: metric.value
-                for key, metric in snapshot.metrics.items()
-            },
+            reading["auxiliary"],
             {
                 "temp_a": 25.125,
                 "heater_output": 17.25,
                 "heater_range": "MID",
             },
         )
-        heater = snapshot.metrics["heater_output"]
-        self.assertEqual(heater.display_name, "Heater Output")
-        self.assertEqual(heater.unit, "%FS")
-
-    def test_monitor_reading_selection_controls_returned_metrics(self) -> None:
+    def test_auxiliary_selection_controls_returned_values(self) -> None:
         transport = FakeTransport()
         controller = self._controller(
             transport,
-            config=_config(monitor_readings=["heater_output"]),
+            config=_config(auxiliary_readings=["heater_output"]),
         )
-        asyncio.run(controller.connect())
-        snapshot = asyncio.run(controller.poll())
-        self.assertEqual(tuple(snapshot.metrics), ("heater_output",))
+        controller.open()
+        reading = controller.read_status()
+        self.assertEqual(tuple(reading["auxiliary"]), ("heater_output",))
 
     def test_measurement_poll_queries_only_temp_b(self) -> None:
         transport = FakeTransport(measurement_temperature="6.875 K")
         controller = self._controller(transport)
-        asyncio.run(controller.connect())
+        controller.open()
         transport.commands.clear()
 
-        snapshot = asyncio.run(controller.poll_measurement())
+        reading = controller.read_measurement()
 
         self.assertEqual(transport.commands, [MEASUREMENT_TEMPERATURE_QUERY])
-        self.assertEqual(snapshot.current, 6.875)
-        self.assertEqual(snapshot.target, 4.0)
-        self.assertEqual(snapshot.rate_per_minute, 1.0)
-        self.assertEqual(
-            {
-                key: metric.value
-                for key, metric in snapshot.metrics.items()
-            },
-            {
-                "temp_a": None,
-                "heater_output": None,
-                "heater_range": None,
-            },
-        )
+        self.assertEqual(reading, {"value": 6.875})
 
     def test_set_target_selects_pid_zone_and_confirms_every_write(self) -> None:
         transport = FakeTransport()
         controller = self._controller(transport)
-        asyncio.run(controller.connect())
+        controller.open()
         transport.commands.clear()
 
-        asyncio.run(controller.set_target(50.0, 3.0))
+        controller.set_target(50.0, 3.0)
 
         self.assertEqual(
             transport.commands,
@@ -276,27 +256,27 @@ class CryoconControllerTests(unittest.TestCase):
     def test_pid_temperature_is_a_strict_upper_boundary(self) -> None:
         transport = FakeTransport()
         controller = self._controller(transport)
-        asyncio.run(controller.connect())
+        controller.open()
 
         transport.commands.clear()
-        asyncio.run(controller.set_target(9.999, 1.0))
+        controller.set_target(9.999, 1.0)
         self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 1;PGAIN?")
 
         transport.commands.clear()
-        asyncio.run(controller.set_target(10.0, 1.0))
+        controller.set_target(10.0, 1.0)
         self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 2;PGAIN?")
 
         transport.commands.clear()
-        asyncio.run(controller.set_target(400.0, 1.0))
+        controller.set_target(400.0, 1.0)
         self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 2;PGAIN?")
 
     def test_hold_uses_fresh_b_reading_and_never_turns_output_off(self) -> None:
         transport = FakeTransport()
         controller = self._controller(transport)
-        asyncio.run(controller.connect())
+        controller.open()
         transport.commands.clear()
 
-        asyncio.run(controller.hold())
+        controller.hold()
 
         self.assertEqual(
             transport.commands[0],
@@ -316,17 +296,17 @@ class CryoconControllerTests(unittest.TestCase):
             with self.subTest(code=code):
                 controller = self._controller(FakeTransport(status=response))
                 with self.assertRaises(SafetyViolation) as captured:
-                    asyncio.run(controller.connect())
+                    controller.open()
                 self.assertEqual(captured.exception.code, code)
 
     def test_write_readback_mismatch_has_uncertain_result_and_is_not_replayed(self) -> None:
         transport = FakeTransport(mismatch_parameter="IGAIN")
         controller = self._controller(transport)
-        asyncio.run(controller.connect())
+        controller.open()
         transport.commands.clear()
 
         with self.assertRaises(InstrumentError) as captured:
-            asyncio.run(controller.set_target(5.0, 1.0))
+            controller.set_target(5.0, 1.0)
 
         self.assertEqual(captured.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
         self.assertEqual(
@@ -342,11 +322,11 @@ class CryoconControllerTests(unittest.TestCase):
             self._controller(FakeTransport(), config=_config(zones=[]))
 
         controller = self._controller(FakeTransport())
-        asyncio.run(controller.connect())
+        controller.open()
         with self.assertRaises(SafetyViolation):
-            asyncio.run(controller.set_target(401.0, 1.0))
+            controller.set_target(401.0, 1.0)
         with self.assertRaises(SafetyViolation):
-            asyncio.run(controller.set_target(4.0, 10.1))
+            controller.set_target(4.0, 10.1)
 
         short_budget = _config()
         short_budget.operation_timeout_seconds = 7.5
