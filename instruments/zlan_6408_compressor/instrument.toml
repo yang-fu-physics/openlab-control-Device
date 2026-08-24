@@ -1,0 +1,23 @@
+id = "zlan_6408_compressor"
+name = "ZLAN 6408 Compressor I/O"
+version = "0.1.0"
+api_version = "3"
+core_requires = ">=0.16,<0.17"
+backend = "backend:Zlan6408Compressor"
+kinds = ["monitor"]
+dependencies = []
+main_reading = "compressor_state"
+
+[panel]
+template = "switch"
+
+[readings.compressor_state]
+label = "Compressor State (DI1)"
+
+[[sequence_commands]]
+id = "compressor_on"
+label = "Compressor On"
+
+[[sequence_commands]]
+id = "compressor_off"
+label = "Compressor Off"

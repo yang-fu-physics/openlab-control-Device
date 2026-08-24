@@ -21,6 +21,8 @@ instruments/<id>/
 - `example_monitor`：只读 Monitor 骨架，不含真实命令。
 - `cryocon_22c_24c`：Cryo-con 22C/24C 的 Beta 实现；使用一个 USB VISA 会话，以 B 为
   主温度、A 为监视温度，并记录加热输出和量程。PID 表必须来自现场验证配置。
+- `zlan_6408_compressor`：ZLAN 6408I 的 Beta 实现；使用 Modbus TCP，以 DO1 控制压缩机，
+  以 DI1 显示并记录状态，并提供 `Compressor On/Off` SEQ 指令。
 
 真实型号实现必须明确写出真机验证状态。示例骨架不能直接用于真实仪表。
 
@@ -51,8 +53,9 @@ template = "controller" # 温度/磁场：当前值、目标、速率和稳定�
 
 只读监视仪表使用 `template = "readout"`。一个 `readout` 以 2×2 最多显示四个读数，第五个
 读数开始放到右侧的下一个面板。控制器的主面板保持原样，辅助读数按相同规则进入
-`readout`。可控实例必须选择 `controller`；缺少 `[panel]` 的清单会直接显示为 Invalid，
-不做旧清单兼容。
+`readout`。简单 0/1 状态和无参数指令按钮使用 `template = "switch"`；按钮直接复用清单的
+`sequence_commands`。可控温度/磁场实例必须选择 `controller`；缺少 `[panel]` 的清单会直接
+显示为 Invalid，不做旧清单兼容。
 
 ## 编写原则
 
