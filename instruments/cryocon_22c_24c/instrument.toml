@@ -1,12 +1,15 @@
 id = "cryocon_22c_24c"
 name = "Cryo-con 22C / 24C Temperature Controller"
 version = "0.2.0"
-api_version = "2"
+api_version = "3"
 core_requires = ">=0.16,<0.17"
 backend = "backend:Cryocon22C24CController"
 kinds = ["temperature"]
 dependencies = []
 main_reading = "temp_b"
+
+[panel]
+template = "controller"
 
 [discovery]
 identity_pattern = "(?i)cryo-?con.*(?:22c|24c)"

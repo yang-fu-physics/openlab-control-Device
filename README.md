@@ -42,6 +42,18 @@ PySide6、QtAwesome、packaging、PyVISA 和 typing_extensions 使用主框架�
 System Instrument 中重复安装。只有框架没有的额外依赖才需要 `requirements.lock` 和本地
 wheel，安装过程完全离线。
 
+每份 `instrument.toml` 必须明确选择底部主面板：
+
+```toml
+[panel]
+template = "controller" # 温度/磁场：当前值、目标、速率和稳定状态
+```
+
+只读监视仪表使用 `template = "readout"`。一个 `readout` 以 2×2 最多显示四个读数，第五个
+读数开始放到右侧的下一个面板。控制器的主面板保持原样，辅助读数按相同规则进入
+`readout`。可控实例必须选择 `controller`；缺少 `[panel]` 的清单会直接显示为 Invalid，
+不做旧清单兼容。
+
 ## 编写原则
 
 - `__init__` 只保存配置，不连接仪表。
