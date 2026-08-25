@@ -2,7 +2,7 @@ id = "cryocon_22c_24c"
 name = "Cryo-con 22C / 24C Temperature Controller"
 version = "0.2.0"
 api_version = "3"
-core_requires = ">=0.17,<0.18"
+core_requires = ">=0.18,<0.19"
 backend = "backend:Cryocon22C24CController"
 kinds = ["temperature"]
 dependencies = []

@@ -2,7 +2,7 @@ id = "zlan_6408_compressor"
 name = "ZLAN 6408 Compressor I/O"
 version = "0.1.0"
 api_version = "3"
-core_requires = ">=0.17,<0.18"
+core_requires = ">=0.18,<0.19"
 backend = "backend:Zlan6408Compressor"
 kinds = ["monitor"]
 dependencies = []
