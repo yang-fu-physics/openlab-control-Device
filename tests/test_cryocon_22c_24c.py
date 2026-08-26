@@ -3,10 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+import tempfile
+import tomllib
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PID_FIXTURE = ROOT / "tests" / "fixtures" / "cryocon_pid.toml"
 CORE_SRC = ROOT.parent / "OpenLabControl" / "src"
 if CORE_SRC.is_dir():
     sys.path.insert(0, str(CORE_SRC))
@@ -102,27 +105,7 @@ class FakeTransport:
         self.closed = True
 
 
-def _config(*, zones=None, auxiliary_readings=None):
-    configured_zones = (
-        [
-            {
-                "temperature": 10.0,
-                "p_gain": 1.0,
-                "i_gain": 4.0,
-                "d_gain": 1.0,
-                "heater_range": "LOW",
-            },
-            {
-                "temperature": 400.0,
-                "p_gain": 2.0,
-                "i_gain": 8.0,
-                "d_gain": 2.0,
-                "heater_range": "MID",
-            },
-        ]
-        if zones is None
-        else zones
-    )
+def _config(*, pid_file: Path = PID_FIXTURE, auxiliary_readings=None):
     return SimpleNamespace(
         id="temperature",
         display_name="Temperature",
@@ -143,7 +126,7 @@ def _config(*, zones=None, auxiliary_readings=None):
             "io_timeout_seconds": 1.0,
             "monitor_a_max_temperature": 320.0,
             "hold_rate_per_minute": 1.0,
-            "pid_zones": configured_zones,
+            "pid_file": str(pid_file),
         },
     )
 
@@ -238,7 +221,7 @@ class CryoconControllerTests(unittest.TestCase):
         controller.open()
         transport.commands.clear()
 
-        controller.set_target(50.0, 3.0)
+        controller.set_target(50.0, 3.0, control="loop_1")
 
         self.assertEqual(
             transport.commands,
@@ -259,15 +242,15 @@ class CryoconControllerTests(unittest.TestCase):
         controller.open()
 
         transport.commands.clear()
-        controller.set_target(9.999, 1.0)
+        controller.set_target(9.999, 1.0, control="loop_1")
         self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 1;PGAIN?")
 
         transport.commands.clear()
-        controller.set_target(10.0, 1.0)
+        controller.set_target(10.0, 1.0, control="loop_1")
         self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 2;PGAIN?")
 
         transport.commands.clear()
-        controller.set_target(400.0, 1.0)
+        controller.set_target(400.0, 1.0, control="loop_1")
         self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 2;PGAIN?")
 
     def test_hold_uses_fresh_b_reading_and_never_turns_output_off(self) -> None:
@@ -276,7 +259,7 @@ class CryoconControllerTests(unittest.TestCase):
         controller.open()
         transport.commands.clear()
 
-        controller.hold()
+        controller.hold(control="loop_1")
 
         self.assertEqual(
             transport.commands[0],
@@ -306,7 +289,7 @@ class CryoconControllerTests(unittest.TestCase):
         transport.commands.clear()
 
         with self.assertRaises(InstrumentError) as captured:
-            controller.set_target(5.0, 1.0)
+            controller.set_target(5.0, 1.0, control="loop_1")
 
         self.assertEqual(captured.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
         self.assertEqual(
@@ -318,51 +301,77 @@ class CryoconControllerTests(unittest.TestCase):
         )
 
     def test_local_limits_and_pid_table_are_fail_closed(self) -> None:
-        with self.assertRaisesRegex(ValueError, "pid_zones"):
-            self._controller(FakeTransport(), config=_config(zones=[]))
+        with self.assertRaisesRegex(ValueError, "zones"):
+            self._controller(
+                FakeTransport(),
+                config=_config(
+                    pid_file=(
+                        ROOT
+                        / "instruments"
+                        / "cryocon_22c_24c"
+                        / "pid.example.toml"
+                    )
+                ),
+            )
 
         controller = self._controller(FakeTransport())
         controller.open()
         with self.assertRaises(SafetyViolation):
-            controller.set_target(401.0, 1.0)
+            controller.set_target(401.0, 1.0, control="loop_1")
         with self.assertRaises(SafetyViolation):
-            controller.set_target(4.0, 10.1)
+            controller.set_target(4.0, 10.1, control="loop_1")
 
         short_budget = _config()
         short_budget.operation_timeout_seconds = 7.5
         with self.assertRaisesRegex(ValueError, "seven VISA I/O timeouts"):
             self._controller(FakeTransport(), config=short_budget)
 
-    def test_pid_gains_accept_instrument_zero_boundary(self) -> None:
-        controller = self._controller(
-            FakeTransport(),
-            config=_config(
-                zones=[
-                    {
-                        "temperature": 400.0,
-                        "p_gain": 0.0,
-                        "i_gain": 0.0,
-                        "d_gain": 0.0,
-                    }
-                ]
-            ),
-        )
-        self.assertEqual(controller._pid_zones[0].p_gain, 0.0)
+    def test_pid_file_missing_or_invalid_fails_before_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file = Path(temporary) / "missing.toml"
+            with self.assertRaises(FileNotFoundError):
+                self._controller(
+                    FakeTransport(),
+                    config=_config(pid_file=pid_file),
+                )
 
-        with self.assertRaisesRegex(ValueError, "0–1000"):
-            self._controller(
-                FakeTransport(),
-                config=_config(
-                    zones=[
-                        {
-                            "temperature": 400.0,
-                            "p_gain": -0.1,
-                            "i_gain": 0.0,
-                            "d_gain": 0.0,
-                        }
-                    ]
-                ),
+            pid_file.write_text("[[zones]\n", encoding="utf-8")
+            with self.assertRaises(tomllib.TOMLDecodeError):
+                self._controller(
+                    FakeTransport(),
+                    config=_config(pid_file=pid_file),
+                )
+
+    def test_pid_gains_accept_instrument_zero_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file = Path(temporary) / "pid.toml"
+            pid_file.write_text(
+                "[[zones]]\n"
+                "temperature = 400.0\n"
+                "p_gain = 0.0\n"
+                "i_gain = 0.0\n"
+                "d_gain = 0.0\n",
+                encoding="utf-8",
             )
+            controller = self._controller(
+                FakeTransport(),
+                config=_config(pid_file=pid_file),
+            )
+            self.assertEqual(controller._pid_zones[0].p_gain, 0.0)
+
+            pid_file.write_text(
+                "[[zones]]\n"
+                "temperature = 400.0\n"
+                "p_gain = -0.1\n"
+                "i_gain = 0.0\n"
+                "d_gain = 0.0\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "0–1000"):
+                self._controller(
+                    FakeTransport(),
+                    config=_config(pid_file=pid_file),
+                )
 
 
 if __name__ == "__main__":

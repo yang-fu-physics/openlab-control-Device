@@ -1,15 +1,64 @@
 id = "cryocon_22c_24c"
 name = "Cryo-con 22C / 24C Temperature Controller"
-version = "0.2.0"
-api_version = "3"
-core_requires = ">=0.18,<0.19"
+version = "0.3.0"
+api_version = "4"
+core_requires = ">=0.19,<0.20"
 backend = "backend:Cryocon22C24CController"
 kinds = ["temperature"]
-dependencies = []
-main_reading = "temp_b"
 
-[panel]
+[[config_fields]]
+id = "io_timeout_seconds"
+label = "VISA I/O Timeout (s)"
+type = "number"
+default = 1.0
+min = 0.001
+
+[[config_fields]]
+id = "monitor_a_max_temperature"
+label = "Temp A Maximum (K)"
+type = "number"
+default = 320.0
+min = 0.001
+
+[[config_fields]]
+id = "hold_rate_per_minute"
+label = "Hold Rate (K/min)"
+type = "number"
+default = 1.0
+min = 0.001
+
+[[config_fields]]
+id = "pid_file"
+label = "PID File"
+type = "pid_file"
+default = "pid.example.toml"
+
+[[controls]]
+id = "loop_1"
+label = "Loop 1"
+
+[[panels]]
+id = "control"
+label = "Sample Temperature"
 template = "controller"
+control = "loop_1"
+reading_options = ["temp_b"]
+default_reading = "temp_b"
+min_value = 2.0
+max_value = 400.0
+default_rate_per_minute = 1.0
+max_rate_per_minute = 10.0
+stability_tolerance = 0.05
+stability_max_slope_per_minute = 0.05
+stability_dwell_seconds = 30.0
+stability_timeout_seconds = 1800.0
+stability_window_seconds = 30.0
+
+[[panels]]
+id = "monitor"
+label = "Temperature and Heater"
+template = "readout_grid"
+readings = ["temp_a", "heater_output", "heater_range"]
 
 [discovery]
 identity_pattern = "(?i)cryo-?con.*(?:22c|24c)"

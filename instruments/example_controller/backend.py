@@ -55,7 +55,10 @@ class ExampleController(SystemInstrument):
         value: float,
         rate_per_minute: float,
         mode: str = "Settle",
+        *,
+        control: str,
     ) -> None:
+        del control
         if self._transport is None:
             raise InstrumentError(
                 "Instrument is not connected",
@@ -83,7 +86,8 @@ class ExampleController(SystemInstrument):
             self._address,
         )
 
-    def hold(self) -> None:
+    def hold(self, *, control: str) -> None:
+        del control
         if self._transport is None:
             raise InstrumentError(
                 "Instrument is not connected",

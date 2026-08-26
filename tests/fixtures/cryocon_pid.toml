@@ -1,0 +1,13 @@
+[[zones]]
+temperature = 10.0
+p_gain = 1.0
+i_gain = 4.0
+d_gain = 1.0
+heater_range = "LOW"
+
+[[zones]]
+temperature = 400.0
+p_gain = 2.0
+i_gain = 8.0
+d_gain = 2.0
+heater_range = "MID"

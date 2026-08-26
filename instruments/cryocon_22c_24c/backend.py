@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from collections.abc import Callable, Mapping
+from pathlib import Path
+import tomllib
 from typing import Any
 
 from labcontrol.instruments.base import InstrumentError, SystemInstrument, SafetyViolation
@@ -41,11 +43,11 @@ class Cryocon22C24CController(SystemInstrument):
         self._address = config.address
         self._auxiliary_readings = frozenset(config.auxiliary_readings)
         self._io_timeout = self._positive_number(
-            config.extras.get("io_timeout_seconds", 2.0),
+            config.extras["io_timeout_seconds"],
             "io_timeout_seconds",
         )
         self._monitor_max = self._finite_number(
-            config.extras.get("monitor_a_max_temperature", 320.0),
+            config.extras["monitor_a_max_temperature"],
             "monitor_a_max_temperature",
         )
         if not self._address.upper().startswith("USB"):
@@ -64,8 +66,10 @@ class Cryocon22C24CController(SystemInstrument):
                 "operation_timeout_seconds must exceed seven VISA I/O timeouts "
                 "plus 0.5 s so Hold can finish its fresh read and confirmed writes"
             )
+        with Path(config.extras["pid_file"]).open("rb") as handle:
+            pid_config = tomllib.load(handle)
         self._pid_zones = self._parse_pid_zones(
-            config.extras.get("pid_zones"),
+            pid_config.get("zones"),
             float(config.max_value),
         )
 
@@ -182,17 +186,20 @@ class Cryocon22C24CController(SystemInstrument):
         value: float,
         rate_per_minute: float,
         mode: str = "Settle",
+        *,
+        control: str,
     ) -> None:
         """先按目标选择并确认 PID，再确认速率，最后写入并确认目标。"""
 
-        del mode
+        del mode, control
         target = self._bounded_target(value)
         rate = self._bounded_rate(rate_per_minute)
         self._apply_pid_and_target(target, rate)
 
-    def hold(self) -> None:
+    def hold(self, *, control: str) -> None:
         """以即时 B 读数作为目标；保持输出开启和 Ramp-P 控制。"""
 
+        del control
         transport = self._require_transport()
         try:
             current, unit, alarm = instrument.read_temperature_b(transport)
@@ -212,7 +219,7 @@ class Cryocon22C24CController(SystemInstrument):
         target = self._bounded_target(current)
         # Hold 仍使用正速率；设定点等于当前值后仪表会停止继续爬升。
         rate = self._bounded_rate(
-            float(self.config.extras.get("hold_rate_per_minute", 1.0))
+            float(self.config.extras["hold_rate_per_minute"])
         )
         self._apply_pid_and_target(target, rate)
 
@@ -383,32 +390,32 @@ class Cryocon22C24CController(SystemInstrument):
     ) -> tuple[PIDZone, ...]:
         if not isinstance(raw_zones, list) or not raw_zones:
             raise ValueError(
-                "cryocon_22c_24c requires a non-empty pid_zones list; "
+                "cryocon_22c_24c requires a non-empty zones list; "
                 "copy the PID values already validated for this cryostat"
             )
         zones: list[PIDZone] = []
         previous_maximum = float("-inf")
         for index, raw_zone in enumerate(raw_zones, start=1):
             if not isinstance(raw_zone, Mapping):
-                raise ValueError(f"pid_zones[{index}] must be a table")
+                raise ValueError(f"zones[{index}] must be a table")
             maximum = cls._finite_number(
                 raw_zone.get("temperature"),
-                f"pid_zones[{index}].temperature",
+                f"zones[{index}].temperature",
             )
             p_gain = cls._finite_number(
                 raw_zone.get("p_gain"),
-                f"pid_zones[{index}].p_gain",
+                f"zones[{index}].p_gain",
             )
             i_gain = cls._finite_number(
                 raw_zone.get("i_gain"),
-                f"pid_zones[{index}].i_gain",
+                f"zones[{index}].i_gain",
             )
             d_gain = cls._finite_number(
                 raw_zone.get("d_gain"),
-                f"pid_zones[{index}].d_gain",
+                f"zones[{index}].d_gain",
             )
             if maximum <= previous_maximum:
-                raise ValueError("pid_zones temperature values must increase")
+                raise ValueError("zones temperature values must increase")
             if min(p_gain, i_gain, d_gain) < 0.0 or max(
                 p_gain,
                 i_gain,
@@ -417,7 +424,7 @@ class Cryocon22C24CController(SystemInstrument):
                 raise ValueError("PID gains must be within the instrument 0–1000 range")
             if d_gain > i_gain / 4.0:
                 raise ValueError(
-                    f"pid_zones[{index}].d_gain must not exceed i_gain / 4"
+                    f"zones[{index}].d_gain must not exceed i_gain / 4"
                 )
             raw_range = raw_zone.get("heater_range")
             heater_range = (
@@ -427,7 +434,7 @@ class Cryocon22C24CController(SystemInstrument):
             )
             if heater_range not in {None, "LOW", "MID", "HI"}:
                 raise ValueError(
-                    f"pid_zones[{index}].heater_range must be LOW, MID, or HI"
+                    f"zones[{index}].heater_range must be LOW, MID, or HI"
                 )
             zones.append(
                 PIDZone(

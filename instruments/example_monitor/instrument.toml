@@ -1,15 +1,16 @@
 id = "example_monitor"
 name = "Example Read-only Monitor"
-version = "0.3.0"
-api_version = "3"
-core_requires = ">=0.18,<0.19"
+version = "0.4.0"
+api_version = "4"
+core_requires = ">=0.19,<0.20"
 backend = "backend:ExampleMonitor"
 kinds = ["monitor"]
-dependencies = []
-main_reading = "value"
 
-[panel]
+[[panels]]
+id = "reading"
+label = "Reading"
 template = "readout"
+readings = ["value"]
 
 [readings.value]
 label = "Reading"

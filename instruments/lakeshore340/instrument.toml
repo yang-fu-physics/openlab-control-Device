@@ -1,0 +1,124 @@
+id = "lakeshore340"
+name = "Lake Shore Model 340 Temperature Controller"
+version = "0.2.0"
+api_version = "4"
+core_requires = ">=0.19,<0.20"
+backend = "backend:LakeShore340"
+kinds = ["temperature"]
+
+[[config_fields]]
+id = "loop1_input"
+label = "Loop 1 Input"
+type = "choice"
+default = "A"
+options = ["A", "B"]
+
+[[config_fields]]
+id = "loop2_input"
+label = "Loop 2 Input"
+type = "choice"
+default = "B"
+options = ["A", "B"]
+
+[[config_fields]]
+id = "loop2_enabled"
+label = "Use Control Loop 2"
+type = "boolean"
+default = true
+
+[[config_fields]]
+id = "visa_timeout_ms"
+label = "VISA I/O Timeout (ms)"
+type = "integer"
+default = 1000
+min = 1
+
+[discovery]
+identity_pattern = "^LSCI,MODEL340(?:,|$)"
+
+[[controls]]
+id = "main"
+label = "Main Temperature"
+
+[[panels]]
+id = "control"
+label = "Control"
+template = "controller"
+control = "main"
+reading_options = ["temp_a", "temp_b"]
+default_reading = "temp_a"
+min_value = 1.8
+max_value = 400.0
+default_rate_per_minute = 1.0
+max_rate_per_minute = 30.0
+stability_tolerance = 0.01
+stability_max_slope_per_minute = 0.01
+stability_dwell_seconds = 5.0
+stability_timeout_seconds = 1800.0
+stability_window_seconds = 5.0
+
+[[panels]]
+id = "temperatures"
+label = "Temperatures"
+template = "readout_grid"
+readings = ["temp_a", "temp_b"]
+
+[[panels]]
+id = "loop_1"
+label = "Loop 1"
+template = "readout_grid"
+readings = [
+    "loop_1_output",
+    "loop_1_range",
+    "loop_1_setpoint",
+    "loop_1_ramping",
+]
+
+[[panels]]
+id = "loop_2"
+label = "Loop 2"
+template = "readout_grid"
+readings = [
+    "loop_2_output",
+    "loop_2_setpoint",
+    "loop_2_ramping",
+]
+
+[readings.temp_a]
+label = "Temp A"
+unit = "K"
+decimals = 3
+
+[readings.temp_b]
+label = "Temp B"
+unit = "K"
+decimals = 3
+
+[readings.loop_1_output]
+label = "Loop 1 Output"
+unit = "%"
+decimals = 1
+
+[readings.loop_1_range]
+label = "Loop 1 Range"
+
+[readings.loop_1_setpoint]
+label = "Loop 1 Setpoint"
+unit = "K"
+decimals = 3
+
+[readings.loop_1_ramping]
+label = "Loop 1 Ramping"
+
+[readings.loop_2_output]
+label = "Loop 2 Output"
+unit = "%"
+decimals = 1
+
+[readings.loop_2_setpoint]
+label = "Loop 2 Setpoint"
+unit = "K"
+decimals = 3
+
+[readings.loop_2_ramping]
+label = "Loop 2 Ramping"

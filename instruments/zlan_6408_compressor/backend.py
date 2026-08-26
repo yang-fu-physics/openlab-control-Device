@@ -22,11 +22,12 @@ class Zlan6408Compressor(SystemInstrument):
         ] = ModbusTcpTransport,
     ) -> None:
         super().__init__(config)
-        self._address = config.address
-        self._io_timeout = float(
-            config.extras.get("io_timeout_seconds", 1.0)
-        )
-        self._unit_id = int(config.extras.get("unit_id", 1))
+        host = str(config.extras["host"])
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        self._address = f"tcp://{host}:{int(config.extras['port'])}"
+        self._io_timeout = float(config.extras["io_timeout_seconds"])
+        self._unit_id = int(config.extras["unit_id"])
         if not math.isfinite(self._io_timeout) or self._io_timeout <= 0.0:
             raise ValueError("io_timeout_seconds must be positive")
         if not 1 <= self._unit_id <= 247:

@@ -5,30 +5,14 @@ closes DO1 and `Compressor Off` opens DO1. The status panel and
 `instrument_status.dat` report DI1 as `1` (On) or `0` (Off); a successful DO1 write
 does not override or predict the DI1 status.
 
-Use Instrument Scanner to add the TCP address and port, then select
-`ZLAN 6408 Compressor I/O`. A typical resource entry is:
+ZLAN does not participate in generic VISA or TCP resource discovery. Its
+`instrument.toml` declares `host`, `port`, I/O timeout, and Modbus unit ID as
+instrument-specific fields. Instrument Scanner presents them on the ZLAN page and
+writes them into the generated instance configuration:
 
 ```toml
-[[resources]]
-id = "compressor_io"
-address = "tcp://192.168.1.20:502"
-identity = ""
-purpose = "system"
-system_instrument = "zlan_6408_compressor"
-auxiliary_readings = []
-```
-
-Add the logical instrument to `configs/site.local.toml`:
-
-```toml
-[[instruments]]
-id = "compressor"
-display_name = "Compressor"
-kind = "monitor"
-resource = "compressor_io"
-control_enabled = false
-operation_timeout_seconds = 3.0
-shutdown_timeout_seconds = 1.0
+host = "192.168.1.20"
+port = 502
 io_timeout_seconds = 1.0
 unit_id = 1
 ```

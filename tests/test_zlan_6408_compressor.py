@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import struct
 import sys
+import tomllib
 import unittest
 
 
@@ -87,8 +88,9 @@ class FakeTransport:
 def _config() -> SimpleNamespace:
     return SimpleNamespace(
         id="compressor",
-        address="tcp://192.168.1.20:502",
         extras={
+            "host": "192.168.1.20",
+            "port": 502,
             "io_timeout_seconds": 1.0,
             "unit_id": 1,
         },
@@ -96,7 +98,7 @@ def _config() -> SimpleNamespace:
 
 
 class ZlanProtocolTests(unittest.TestCase):
-    def test_tcp_endpoint_requires_scanner_address_format(self) -> None:
+    def test_tcp_endpoint_requires_internal_transport_address_format(self) -> None:
         self.assertEqual(
             tcp_endpoint("tcp://192.168.1.20:502"),
             ("192.168.1.20", 502),
@@ -175,12 +177,22 @@ class ZlanProtocolTests(unittest.TestCase):
 class ZlanBackendTests(unittest.TestCase):
     def test_open_and_poll_read_di1_without_changing_do1(self) -> None:
         transport = FakeTransport(state=True)
+        endpoints: list[tuple[str, float, int]] = []
+
+        def transport_factory(address, timeout, unit_id):
+            endpoints.append((address, timeout, unit_id))
+            return transport
+
         controller = Zlan6408Compressor(
             _config(),
-            lambda _address, _timeout, _unit_id: transport,
+            transport_factory,
         )
 
         controller.open()
+        self.assertEqual(
+            endpoints,
+            [("tcp://192.168.1.20:502", 1.0, 1)],
+        )
         self.assertEqual(controller.read_status(), {"value": 1.0})
         self.assertEqual(transport.reads, 2)
         self.assertEqual(transport.writes, [])
@@ -222,14 +234,30 @@ class ZlanBackendTests(unittest.TestCase):
         self.assertEqual(transport.writes, [True])
 
     def test_manifest_selects_switch_panel_and_commands(self) -> None:
-        descriptor = load_instrument_manifest(
-            ROOT / "instruments" / "zlan_6408_compressor"
-        )
+        instrument = ROOT / "instruments" / "zlan_6408_compressor"
+        descriptor = load_instrument_manifest(instrument)
         self.assertTrue(descriptor.valid, descriptor.error)
-        self.assertEqual(descriptor.panel_template, "switch")
         self.assertEqual(
             [command.label for command in descriptor.sequence_commands],
             ["Compressor On", "Compressor Off"],
+        )
+        with (instrument / "instrument.toml").open("rb") as handle:
+            manifest = tomllib.load(handle)
+        self.assertEqual(
+            [field["id"] for field in manifest["config_fields"]],
+            ["host", "port", "io_timeout_seconds", "unit_id"],
+        )
+        self.assertEqual(
+            manifest["panels"],
+            [
+                {
+                    "id": "compressor",
+                    "label": "Compressor",
+                    "template": "switch",
+                    "reading": "compressor_state",
+                    "commands": ["compressor_on", "compressor_off"],
+                }
+            ],
         )
 
 

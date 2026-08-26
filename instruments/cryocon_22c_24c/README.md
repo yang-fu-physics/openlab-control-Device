@@ -8,75 +8,35 @@
 
 ## 配置
 
-把完整目录复制到核心仓库的 `system_instruments/cryocon_22c_24c/`，然后用下面结构替换
-温度仪表。VISA 地址和 PID 数值必须取自现场已经验证的 22C/24C 配置，不能照抄示意值。
+把完整目录复制到核心仓库的 `system_instruments/cryocon_22c_24c/`，然后运行 Instrument
+Scanner。选择 USB VISA 资源后，扫描器创建一个 Sample Temperature controller 和一个
+Temperature and Heater 监视面板；两者共用同一个物理实例和 USB 会话。
+
+每个物理实例使用自己的 `configs/pid/<instance-id>.toml`。首次保存该实例时，扫描器把
+`pid.example.toml` 复制到这个位置；以后再次保存或移除实例都不会覆盖或删除 PID 文件。
+内置示例故意只有 `zones = []`，不能直接运行。必须填写该冷却系统已经在现场验证过的 PID
+数值：
 
 ```toml
-[application]
-# 前面板约 1 秒刷新一次；Measurement Module 调用 api.instruments() 时仍会即时读取。
-poll_interval_seconds = 1.0
+[[zones]]
+temperature = 10.0 # 严格上边界
+p_gain = 1.0
+i_gain = 4.0
+d_gain = 1.0
+heater_range = "LOW" # 可省略；省略时保留当前量程
 
-[[instruments]]
-id = "temperature"
-display_name = "Temperature"
-kind = "temperature"
-control_enabled = true
-resource = "cryocon_main"
-min_value = 2.0
-max_value = 400.0
-max_rate_per_minute = 10.0
-stale_after_seconds = 3.0
-operation_timeout_seconds = 10.0
-shutdown_timeout_seconds = 3.0
-io_timeout_seconds = 1.0
-monitor_a_max_temperature = 320.0
-hold_rate_per_minute = 1.0
-
-[instruments.stability]
-tolerance = 0.05
-max_slope_per_minute = 0.05
-dwell_seconds = 30.0
-timeout_seconds = 1800.0
-window_seconds = 30.0
-stale_after_seconds = 3.0
-
-# 按 temperature 从低到高填写；最后一行必须覆盖 400 K。
-# 目标温度 < 第一行 temperature 时用第一组 PID；达到边界后使用下一组。
-# 达到最后一行边界时仍使用最后一组 PID。
-# 下列尖括号是占位符，不是可直接解析的 TOML 数值。
-[[instruments.pid_zones]]
-temperature = <ZONE_1_BOUNDARY_K>
-p_gain = <VALIDATED_P>
-i_gain = <VALIDATED_I>
-d_gain = <VALIDATED_D>
-# heater_range 可省略；省略时保留仪表当前量程。
-heater_range = "LOW"
-
-[[instruments.pid_zones]]
+[[zones]]
 temperature = 400.0
-p_gain = <VALIDATED_P>
-i_gain = <VALIDATED_I>
-d_gain = <VALIDATED_D>
+p_gain = 2.0
+i_gain = 8.0
+d_gain = 2.0
 heater_range = "MID"
 ```
 
-物理地址、实现选择和辅助读数由扫描工具写入 `configs/instruments.local.toml`：
-
-```toml
-schema_version = 2
-
-[[resources]]
-id = "cryocon_main"
-address = "USB0::...::INSTR"
-identity = "Cryo-con,24C,..."
-purpose = "system"
-system_instrument = "cryocon_22c_24c"
-auxiliary_readings = ["temp_a", "heater_output", "heater_range"]
-```
-
-TempB 是清单固定的主温度；TempA、加热输出和量程默认全部选中，由同一次读取的
-`auxiliary` 字典返回，不另开第二个 USB 会话。扫描器中的 Auxiliary readings 复选框决定哪些附加值进入界面和
-日志；无论是否显示，后端仍完整读取并校验 TempA、加热输出和量程。
+温度边界必须严格递增，最后一行必须覆盖 controller 的最大温度；P/I/D 必须在 0–1000，
+D 不得超过 I/4，量程只能是 LOW/MID/HI。文件缺失、TOML 损坏、空 zones 或任一安全条件
+不满足时，后台在连接仪表前快速失败。TempB 是 controller 的固定主读数；TempA、加热输出
+和量程由同一次读取返回，不另开第二个 USB 会话。
 
 ## 运行规则
 

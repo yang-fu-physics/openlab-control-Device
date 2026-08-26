@@ -1,0 +1,13 @@
+# Copy this file for one physical Cryo-con instance, then replace the empty
+# list with the PID zones already validated for that cryostat.
+zones = []
+
+# Each zone uses a strict upper temperature boundary. The final boundary must
+# cover the controller panel's configured maximum temperature.
+#
+# [[zones]]
+# temperature = 10.0
+# p_gain = 0.0
+# i_gain = 0.0
+# d_gain = 0.0
+# heater_range = "LOW" # Optional: LOW, MID, or HI.
