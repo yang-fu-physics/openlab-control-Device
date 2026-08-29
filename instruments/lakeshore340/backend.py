@@ -95,6 +95,16 @@ class LakeShore340(SystemInstrument):
         self._auxiliary_input = (
             "B" if self._primary_input == "A" else "A"
         )
+        self._role_required_inputs = {
+            {
+                "temp_a": "A",
+                "temp_b": "B",
+            }[panel.reading]
+            for panel in config.panels
+            if panel.enabled
+            and panel.template == "controller"
+            and panel.role in {"sample_temp", "field"}
+        }
         self._resource_manager = None
         self._resource = None
 
@@ -170,7 +180,9 @@ class LakeShore340(SystemInstrument):
                 manager.close()
 
     def read_status(self) -> dict[str, object]:
-        temperatures = self._read_temperatures()
+        temperatures = self._read_temperatures(
+            required_inputs=self._role_required_inputs
+        )
         loop_1_output = self._float_query("HTR?", percent=True)
         loop_1_range = self._integer_query("RANGE?")
         if not 0 <= loop_1_range <= 5:
@@ -224,7 +236,9 @@ class LakeShore340(SystemInstrument):
         }
 
     def read_measurement(self) -> dict[str, object]:
-        temperatures = self._read_temperatures()
+        temperatures = self._read_temperatures(
+            required_inputs=self._role_required_inputs
+        )
         auxiliary = {}
         auxiliary_key = f"temp_{self._auxiliary_input.casefold()}"
         if auxiliary_key in self.config.auxiliary_readings:
@@ -271,21 +285,33 @@ class LakeShore340(SystemInstrument):
 
     def hold(self, *, control: str) -> None:
         del control
-        temperatures = self._read_temperatures()
+        temperatures = self._read_temperatures(
+            required_inputs={
+                self._loop_inputs[loop]
+                for loop in self._active_loops
+            }
+        )
         for loop in self._active_loops:
-            value = temperatures[self._loop_inputs[loop]]
+            value = float(temperatures[self._loop_inputs[loop]])
             self._write(f"SETP {loop},{value:.9g}")
         for loop in self._active_loops:
             self._write(f"RAMP {loop},0")
 
-    def _read_temperatures(self) -> dict[str, float]:
-        temperatures: dict[str, float] = {}
+    def _read_temperatures(
+        self,
+        *,
+        required_inputs: set[str],
+    ) -> dict[str, float | None]:
+        temperatures: dict[str, float | None] = {}
         for input_name in ("A", "B"):
             temperatures[input_name] = self._float_query(
                 f"KRDG? {input_name}"
             )
             status = self._integer_query(f"RDGST? {input_name}")
             if status:
+                if input_name not in required_inputs:
+                    temperatures[input_name] = None
+                    continue
                 active = ", ".join(
                     label
                     for bit, label in _INPUT_STATUS_FLAGS

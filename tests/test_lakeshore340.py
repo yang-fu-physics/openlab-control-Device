@@ -110,19 +110,37 @@ def _backend_class(manager: FakeResourceManager):
     return module.LakeShore340
 
 
-def _config(*, loop2_enabled: bool = True, main_reading: str = "temp_a"):
+def _config(
+    *,
+    loop2_enabled: bool = True,
+    main_reading: str = "temp_a",
+    loop1_input: str = "A",
+    loop2_input: str = "B",
+    role: str = "sample_temp",
+):
     return SimpleNamespace(
         id="temperature",
         address="GPIB0::12::INSTR",
         main_reading=main_reading,
-        auxiliary_readings=AUXILIARY_READINGS,
+        auxiliary_readings=(
+            "temp_b" if main_reading == "temp_a" else "temp_a",
+            *AUXILIARY_READINGS[1:],
+        ),
+        panels=(
+            SimpleNamespace(
+                enabled=True,
+                template="controller",
+                role=role,
+                reading=main_reading,
+            ),
+        ),
         min_value=1.8,
         max_value=400.0,
         max_rate_per_minute=30.0,
         operation_timeout_seconds=5.0,
         extras={
-            "loop1_input": "A",
-            "loop2_input": "B",
+            "loop1_input": loop1_input,
+            "loop2_input": loop2_input,
             "loop2_enabled": loop2_enabled,
             "visa_timeout_ms": 1000,
         },
@@ -247,15 +265,48 @@ class LakeShore340Tests(unittest.TestCase):
         )
         self.assertEqual(resource.writes, ["RAMP 1,1,2.5"])
 
-    def test_input_status_and_disabled_primary_loop_fail_fast(self) -> None:
+    def test_non_role_input_status_is_returned_as_missing(self) -> None:
         resource = FakeResource()
-        resource.responses["RDGST? B"] = "32"
+        resource.responses["CSET? 1"] = "B,1,1,1"
+        resource.responses["RDGST? A"] = "32"
+        backend = _backend_class(FakeResourceManager(resource))(
+            _config(
+                loop2_enabled=False,
+                main_reading="temp_b",
+                loop1_input="B",
+            )
+        )
+        backend.open()
+
+        status = backend.read_status()
+        self.assertEqual(status["value"], 20.125)
+        self.assertIsNone(status["auxiliary"]["temp_a"])
+        self.assertEqual(
+            backend.read_measurement(),
+            {"value": 20.125, "auxiliary": {"temp_a": None}},
+        )
+
+    def test_role_none_primary_status_is_returned_as_missing(self) -> None:
+        resource = FakeResource()
+        resource.responses["RDGST? A"] = "32"
+        backend = _backend_class(FakeResourceManager(resource))(
+            _config(role="none")
+        )
+        backend.open()
+
+        status = backend.read_status()
+        self.assertIsNone(status["value"])
+        self.assertEqual(status["auxiliary"]["temp_b"], 20.125)
+
+    def test_required_input_status_and_disabled_primary_loop_fail_fast(self) -> None:
+        resource = FakeResource()
+        resource.responses["RDGST? A"] = "32"
         backend = _backend_class(FakeResourceManager(resource))(_config())
         backend.open()
         with self.assertRaises(InstrumentError) as caught:
             backend.read_measurement()
         self.assertEqual(caught.exception.code, "LAKESHORE340_INPUT_STATUS")
-        self.assertEqual(caught.exception.context, "B")
+        self.assertEqual(caught.exception.context, "A")
 
         with self.assertRaises(InstrumentError) as caught:
             _backend_class(FakeResourceManager(FakeResource()))(
@@ -265,6 +316,19 @@ class LakeShore340Tests(unittest.TestCase):
             caught.exception.code,
             "LAKESHORE340_INVALID_CONFIGURATION",
         )
+
+    def test_hold_requires_the_active_loop_input_even_without_a_role(self) -> None:
+        resource = FakeResource()
+        resource.responses["RDGST? A"] = "32"
+        backend = _backend_class(FakeResourceManager(resource))(
+            _config(role="none")
+        )
+        backend.open()
+
+        with self.assertRaises(InstrumentError) as caught:
+            backend.hold(control="main")
+        self.assertEqual(caught.exception.code, "LAKESHORE340_INPUT_STATUS")
+        self.assertEqual(resource.writes, [])
 
     def test_manifest_declares_named_config_and_panel_templates(self) -> None:
         descriptor = load_instrument_manifest(INSTRUMENT)
