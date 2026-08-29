@@ -340,6 +340,7 @@ class LakeShore340Tests(unittest.TestCase):
             [field["id"] for field in manifest["config_fields"]],
             ["loop1_input", "loop2_input", "loop2_enabled", "visa_timeout_ms"],
         )
+        self.assertEqual(manifest["config_fields"][-1]["max"], 9999)
         self.assertEqual([control["id"] for control in manifest["controls"]], ["main"])
         self.assertEqual(
             [panel["id"] for panel in manifest["panels"]],

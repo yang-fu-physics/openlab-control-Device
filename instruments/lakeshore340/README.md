@@ -24,8 +24,10 @@ reorder these fixed panels; it cannot create extra panels.
 
 The single controller can use `temp_a` or `temp_b` as its reading. Scanner also
 collects `loop1_input`, `loop2_input`, `loop2_enabled`, and `visa_timeout_ms`
-from the manifest defaults. The chosen controller reading must belong to exactly
-one enabled physical control loop.
+from the manifest defaults. `visa_timeout_ms` is limited to 1–9999 ms so it
+remains shorter than the core's 10-second instrument-operation timeout. The
+chosen controller reading must belong to exactly one enabled physical control
+loop.
 
 `loop2_enabled = false` prevents Loop 2 queries and writes. Disabling only the
 `loop_2` readout panel hides that panel but does not change physical control
