@@ -10,11 +10,14 @@ The driver only verifies loop input, kelvin units and the physical loop-enable
 state during `open()`. It does not change CSET, PID, heater range, output mode
 or power-up settings.
 
-A nonzero input status is fatal only when that reading belongs to an enabled
-controller whose role is `sample_temp` or `field`. Other displayed readings are
-returned as unavailable, so an unused or out-of-range auxiliary sensor does not
-disconnect the whole physical instance. `hold()` remains stricter: every active
-control-loop input must have a valid fresh reading before any setpoint is written.
+The Model 340 `old reading` status alone retains its numeric value; the manual
+documents that status on every other reading for some thermally compensated
+sensors. Other input-status flags are fatal only when that reading belongs to an
+enabled controller whose role is `sample_temp` or `field`. Other displayed
+readings are returned as unavailable, so an unused or out-of-range auxiliary
+sensor does not disconnect the whole physical instance. `hold()` remains
+stricter: every active control-loop input must have a usable reading before any
+setpoint is written.
 
 Install this folder as `system_instruments/lakeshore340`, then select the GPIB
 resource in Instrument Scanner. The template defines one `control` panel, plus

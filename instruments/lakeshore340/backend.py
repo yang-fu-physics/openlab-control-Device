@@ -19,6 +19,7 @@ _INPUT_STATUS_FLAGS = (
     (64, "units zero"),
     (128, "units overrange"),
 )
+_OLD_READING_STATUS = 2
 
 
 class LakeShore340(SystemInstrument):
@@ -308,7 +309,7 @@ class LakeShore340(SystemInstrument):
                 f"KRDG? {input_name}"
             )
             status = self._integer_query(f"RDGST? {input_name}")
-            if status:
+            if status & ~_OLD_READING_STATUS:
                 if input_name not in required_inputs:
                     temperatures[input_name] = None
                     continue

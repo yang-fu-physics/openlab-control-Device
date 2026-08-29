@@ -286,6 +286,18 @@ class LakeShore340Tests(unittest.TestCase):
             {"value": 20.125, "auxiliary": {"temp_a": None}},
         )
 
+    def test_old_reading_status_keeps_the_numeric_value(self) -> None:
+        resource = FakeResource()
+        resource.responses["RDGST? A"] = "2"
+        backend = _backend_class(FakeResourceManager(resource))(_config())
+        backend.open()
+
+        self.assertEqual(backend.read_status()["value"], 4.2)
+        self.assertEqual(
+            backend.read_measurement(),
+            {"value": 4.2, "auxiliary": {"temp_b": 20.125}},
+        )
+
     def test_role_none_primary_status_is_returned_as_missing(self) -> None:
         resource = FakeResource()
         resource.responses["RDGST? A"] = "32"
