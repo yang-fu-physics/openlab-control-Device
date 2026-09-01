@@ -1,5 +1,8 @@
 # Lake Shore Model 340
 
+Version `0.2.1` supports OpenLab Control 0.19–0.20 and keeps a numeric
+`old reading` available while treating unused invalid inputs as unavailable.
+
 This System Instrument controls a Lake Shore Model 340 through a PyVISA
 GPIB resource. It reads both A/B temperatures freshly for status and
 measurement requests. The core controller value, target and stability follow
