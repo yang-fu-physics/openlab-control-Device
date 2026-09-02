@@ -27,6 +27,11 @@ instruments/<id>/
 
 真实型号实现必须明确写出真机验证状态。示例骨架不能直接用于真实仪表。
 
+`examples/labview_dll` 是直接加载 LabVIEW Shared Library 的开发模板。它规定固定的
+UTF-8 JSON ABI，把输入、输出和 LabVIEW error cluster 映射到现有 System Instrument
+生命周期；复制到 `system_instruments/<id>/` 并完成清单和 DLL 后才会被主程序加载。
+详细步骤见该目录的 README。
+
 ## 手动离线安装
 
 1. 审查目标目录、`instrument.toml` 和后台代码。
