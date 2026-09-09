@@ -86,7 +86,34 @@ class _Library:
 
 class _BackendDriver:
     def __init__(self) -> None:
-        self.description = {"abi_version": 1, "kind": "system_instrument"}
+        self.description = {
+            "abi_version": 1,
+            "kind": "system_instrument",
+            "manual_functions": [
+                {
+                    "id": "diagnostic_read",
+                    "label": "Diagnostic Read",
+                    "inputs": [
+                        {
+                            "name": "mode",
+                            "label": "Mode",
+                            "type": "choice",
+                            "default": "Current",
+                            "choices": ["Current", "Voltage"],
+                        }
+                    ],
+                    "outputs": [
+                        {
+                            "name": "value",
+                            "label": "Value",
+                            "type": "float",
+                            "unit": "V",
+                            "decimals": 9,
+                        }
+                    ],
+                }
+            ],
+        }
         self.calls = []
         self.warning = False
 
@@ -105,6 +132,8 @@ class _BackendDriver:
             )
         if operation == "read_status":
             return {"value": 4.2, "ready": True}
+        if operation == "manual_function":
+            return {"value": 1.25e-6}
         return {}
 
     def close(self):
@@ -187,6 +216,15 @@ class LabVIEWDLLTemplateTests(unittest.TestCase):
         self.assertEqual(backend.read_status(), {"value": 4.2, "ready": True})
         backend.set_target(10.0, 1.5, control="main")
         backend.hold(control="main")
+        result = backend.execute_dll_function(
+            "diagnostic_read",
+            {"mode": "Current"},
+        )
+        self.assertEqual(result, {"value": 1.25e-6})
+        self.assertEqual(
+            backend.dll_functions[0]["id"],
+            "diagnostic_read",
+        )
         calls_before_rejection = len(driver.calls)
         with self.assertRaises(InstrumentError):
             backend.set_target(401.0, 1.5, control="main")
@@ -196,6 +234,10 @@ class LabVIEWDLLTemplateTests(unittest.TestCase):
         backend.close()
         self.assertEqual(driver.calls[0][0], "open")
         self.assertEqual(driver.calls[2][1]["value"], 10.0)
+        self.assertEqual(
+            driver.calls[4][1]["function_id"],
+            "diagnostic_read",
+        )
         self.assertEqual(driver.calls[-1][0], "close")
 
         driver.warning = True

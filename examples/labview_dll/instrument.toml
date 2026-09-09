@@ -2,7 +2,7 @@ id = "labview_dll_example"
 name = "LabVIEW DLL Example Controller"
 version = "0.1.0"
 api_version = "4"
-core_requires = ">=0.20,<0.21"
+core_requires = ">=0.20.1,<0.21"
 backend = "backend:LabVIEWSystemInstrument"
 kinds = ["temperature"]
 

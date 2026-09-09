@@ -1,5 +1,7 @@
 # LabVIEW DLL System Instrument 模板
 
+要求 OpenLab Control `0.20.1` 或更新的 `0.20.x` 版本。
+
 仪表已有经过实际使用的 LabVIEW 驱动或控制 VI 时，优先使用本模板复用原实现，而不是重新
 用 Python 翻译整套底层指令。复用不会替代安全边界：上下限、有限超时、写后回读和真机
 低风险验证仍然必须完成。
@@ -94,11 +96,34 @@ Python 提供 1 MiB 输出缓冲区。DLL 只能写入 `response_capacity` 以�
       "read_measurement",
       "set_target",
       "hold",
-      "sequence_command"
+      "sequence_command",
+      "manual_function"
+    ],
+    "manual_functions": [
+      {
+        "id": "diagnostic_read",
+        "label": "Diagnostic Read",
+        "description": "Run one existing LabVIEW diagnostic VI.",
+        "inputs": [
+          {"name": "mode", "label": "Mode", "type": "choice", "default": "Current", "choices": ["Current", "Voltage"]},
+          {"name": "range", "label": "Range", "type": "choice", "default": "Auto", "choices": ["Auto", "Low", "High"]},
+          {"name": "level", "label": "Level", "type": "float", "default": 0.001, "minimum": 0.0, "maximum": 1.0, "unit": "A", "decimals": 9},
+          {"name": "samples", "label": "Samples", "type": "int", "default": 10, "minimum": 1, "maximum": 1000}
+        ],
+        "outputs": [
+          {"name": "value", "label": "Value", "type": "float", "unit": "V", "decimals": 9},
+          {"name": "status", "label": "Status", "type": "int"}
+        ]
+      }
     ]
   }
 }
 ```
+
+`manual_functions` 是可选项。它直接保存在 DLL 的静态说明里，不需要再修改 TOML 或框架
+源码。System Instrument 加载后，OpenLab 在主菜单 `Instrument` 下按这份说明自动生成输入、
+输出和 Run 按钮；同一函数可以打开多个窗口。只允许在 SEQ 空闲时运行，返回值显示在窗口并
+写入事件日志，不写 DAT。
 
 `OLC_Open` 的请求包含实例 ID、物理地址、`instrument.toml` 声明的专用设置以及核心操作
 超时。例如：
@@ -124,13 +149,18 @@ Python 提供 1 MiB 输出缓冲区。DLL 只能写入 `response_capacity` 以�
   `target/rate/moving/ready`，其他清单读数放在 `auxiliary`。
 - `read_measurement`：直接返回即时测量状态字典；只读测量真正需要的值。
 - `set_target`、`hold`、`sequence_command`：成功时通常返回空对象。
+- `manual_function`：参数包含 `function_id`、对应的 `parameters` 和总超时；结果字段必须与
+  `manual_functions.outputs` 完全一致。
 - `OLC_Open`、`OLC_Close`：成功时通常返回空对象。
 
 ## 必须修改的清单内容
 
 示例清单故意使用永远匹配不到真实仪表的 discovery pattern。复制后必须修改 ID、名称、
 型号匹配、`config_fields`、control、panel、reading、单位和现场安全边界。DLL 的
-`OLC_Describe` 在 Enable 时才运行，不能代替扫描器启动前读取的 `instrument.toml`。
+`OLC_Describe` 在已配置仪表的 worker 启动时运行，不能代替扫描器启动前读取的 `instrument.toml`。
+
+System Instrument 的 SEQ 完成或停止不调用 `OLC_Close`。应用退出时只断开通讯，继续保留
+温控/磁场的当前动作，除非该仪表的明确约定要求其他收尾行为。
 
 `set_target` 在进入 DLL 前会按所选 Controller 面板再次检查目标和速率；DLL 仍应使用
 仪表本机限制并在写入后回读确认。阻塞 I/O 必须有有限超时。框架超时可以结束工作进程，

@@ -23,6 +23,7 @@ class LabVIEWSystemInstrument(SystemInstrument):
     def __init__(self, config) -> None:
         super().__init__(config)
         self._driver = LabVIEWDLL(DLL_PATH, expected_kind="system_instrument")
+        self.dll_functions = self._driver.description.get("manual_functions", [])
         self._close_required = False
 
     @staticmethod
@@ -114,6 +115,25 @@ class LabVIEWSystemInstrument(SystemInstrument):
     def execute_sequence_command(self, command_id: str) -> None:
         try:
             self._driver.invoke("sequence_command", {"command_id": command_id})
+        except LabVIEWDLLFailure as error:
+            self._raise_failure(error)
+
+    def execute_dll_function(
+        self,
+        function_id: str,
+        parameters: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return self._driver.invoke(
+                "manual_function",
+                {
+                    "function_id": function_id,
+                    "parameters": parameters,
+                    "operation_timeout_seconds": (
+                        self.config.operation_timeout_seconds
+                    ),
+                },
+            )
         except LabVIEWDLLFailure as error:
             self._raise_failure(error)
 
