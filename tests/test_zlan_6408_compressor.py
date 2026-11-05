@@ -101,7 +101,7 @@ class FakeTransport:
 def _config(**overrides) -> SimpleNamespace:
     return SimpleNamespace(
         id="compressor",
-        operation_timeout_seconds=10.0,
+        operation_timeout_seconds=30.0,
         extras={
             "host": "192.168.1.20",
             "port": 502,
@@ -111,8 +111,7 @@ def _config(**overrides) -> SimpleNamespace:
             "on_channels": ["DO1"],
             "off_channels": ["DO1"],
             "step_delay_seconds": 0.0,
-            "status_inputs": [],
-            "status_outputs": [],
+            "status_conditions": [],
             **overrides,
         },
     )
@@ -278,7 +277,7 @@ class ZlanBackendTests(unittest.TestCase):
                     outputs=(False, True, False, True),
                 )
                 controller = ZlanRelayController(
-                    _config(status_inputs=di, status_outputs=do), lambda *_: transport,
+                    _config(status_conditions=di + do), lambda *_: transport,
                 )
                 controller.open()
                 self.assertEqual(controller.read_status(), {"value": 1.0})
@@ -294,7 +293,7 @@ class ZlanBackendTests(unittest.TestCase):
     def test_failed_status_read_is_not_off_even_when_another_condition_is_false(self) -> None:
         transport = FakeTransport()
         controller = ZlanRelayController(
-            _config(status_inputs=["DI1"], status_outputs=["DO1"]), lambda *_: transport,
+            _config(status_conditions=["DI1", "DO1"]), lambda *_: transport,
         )
         controller.open()
         transport.output_read_error = TimeoutError("DO reply timed out")
@@ -303,10 +302,18 @@ class ZlanBackendTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "ZLAN_STATUS_READ_FAILED")
 
     def test_mixed_status_io_budget_is_checked(self) -> None:
-        with self.assertRaisesRegex(ValueError, "fit both DI and DO"):
+        with self.assertRaisesRegex(InstrumentError, "DI and DO status reads can take 30 s") as error:
             ZlanRelayController(_config(
-                status_inputs=["DI1"], status_outputs=["DO1"], io_timeout_seconds=5.0,
+                status_conditions=["DI1", "DO1"], io_timeout_seconds=15.0,
             ))
+        self.assertEqual(error.exception.code, "INSTRUMENT_IO_TIMEOUT_TOO_HIGH")
+
+    def test_status_condition_outside_selected_model_is_rejected_before_connecting(self) -> None:
+        for channel in ("DI5", "DO8"):
+            with self.subTest(channel=channel), self.assertRaisesRegex(
+                ValueError, f"{channel} is outside the selected 4-channel ZLAN model",
+            ):
+                ZlanRelayController(_config(status_conditions=[channel]))
 
     def test_unconfirmed_step_continues_on_fresh_connection_for_both_actions(self) -> None:
         for enabled, command, channels in (
@@ -333,10 +340,18 @@ class ZlanBackendTests(unittest.TestCase):
                 self.assertEqual(second.writes, [(channels[1], enabled)])
 
     def test_impossible_step_budget_is_rejected_before_open(self) -> None:
-        with self.assertRaisesRegex(ValueError, "reduce the I/O timeout or step delay"):
+        with self.assertRaisesRegex(InstrumentError, "91 s; must be less than 30 s") as error:
             ZlanRelayController(_config(
-                output_count="8", on_channels=["DO7", "DO8"], step_delay_seconds=8.0,
+                output_count="8", on_channels=["DO7", "DO8"],
+                io_timeout_seconds=30.0, step_delay_seconds=1.0,
             ))
+        self.assertEqual(error.exception.code, "INSTRUMENT_IO_TIMEOUT_TOO_HIGH")
+
+    def test_two_step_budget_can_exceed_ten_seconds_but_fit_thirty(self) -> None:
+        ZlanRelayController(_config(
+            output_count="8", on_channels=["DO7", "DO8"],
+            io_timeout_seconds=5.0, step_delay_seconds=1.0,
+        ))
 
     def test_manifest_selects_switch_panel_and_commands(self) -> None:
         instrument = ROOT / "instruments" / "zlan_6408_compressor"
@@ -351,7 +366,12 @@ class ZlanBackendTests(unittest.TestCase):
         self.assertEqual(
             [field["id"] for field in manifest["config_fields"]],
             ["host", "port", "io_timeout_seconds", "unit_id", "output_count",
-             "on_channels", "off_channels", "step_delay_seconds", "status_inputs", "status_outputs"],
+             "on_channels", "off_channels", "step_delay_seconds", "status_conditions"],
+        )
+        field = descriptor.config_field("status_conditions")
+        self.assertTrue(field.allow_empty)
+        self.assertEqual(
+            field.options, tuple(f"{group}{channel}" for group in ("DI", "DO") for channel in range(1, 9)),
         )
         self.assertEqual(
             manifest["panels"],

@@ -62,9 +62,14 @@ class Cryocon22C24CController(SystemInstrument):
         )
         minimum_operation_timeout = self._io_timeout * 7.0 + 0.5
         if operation_timeout <= minimum_operation_timeout:
-            raise ValueError(
-                "operation_timeout_seconds must exceed seven VISA I/O timeouts "
-                "plus 0.5 s so Hold can finish its fresh read and confirmed writes"
+            raise InstrumentError(
+                f"Instrument I/O timeout setting is too high: "
+                f"seven VISA I/O timeouts of {self._io_timeout:g} s plus 0.5 s "
+                f"need {minimum_operation_timeout:g} s for Hold; "
+                f"must be less than {operation_timeout:g} s. "
+                "Reduce the I/O timeout in Instrument Scanner.",
+                "INSTRUMENT_IO_TIMEOUT_TOO_HIGH",
+                "io_timeout_seconds",
             )
         with Path(config.extras["pid_file"]).open("rb") as handle:
             pid_config = tomllib.load(handle)

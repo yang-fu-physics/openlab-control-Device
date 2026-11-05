@@ -59,13 +59,20 @@ class LakeShore340(SystemInstrument):
             isinstance(self._visa_timeout_ms, bool)
             or not isinstance(self._visa_timeout_ms, int)
             or self._visa_timeout_ms <= 0
-            or self._visa_timeout_ms
-            >= config.operation_timeout_seconds * 1000
         ):
             raise InstrumentError(
-                "visa_timeout_ms must be a positive integer shorter than operation_timeout_seconds",
+                "visa_timeout_ms must be a positive integer",
                 "LAKESHORE340_INVALID_CONFIGURATION",
                 config.id,
+            )
+        if self._visa_timeout_ms >= config.operation_timeout_seconds * 1000:
+            raise InstrumentError(
+                f"Instrument I/O timeout setting is too high: VISA I/O timeout "
+                f"{self._visa_timeout_ms:g} ms must be less than "
+                f"{config.operation_timeout_seconds:g} s. "
+                "Reduce the VISA I/O timeout in Instrument Scanner.",
+                "INSTRUMENT_IO_TIMEOUT_TOO_HIGH",
+                "visa_timeout_ms",
             )
         if not config.address.upper().startswith("GPIB") or not (
             config.address.upper().endswith("::INSTR")

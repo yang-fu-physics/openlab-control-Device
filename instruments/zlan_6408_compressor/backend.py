@@ -32,8 +32,17 @@ class ZlanRelayController(SystemInstrument):
         self._count = int(config.extras["output_count"])
         self._on = tuple(int(channel[2:]) for channel in config.extras["on_channels"])
         self._off = tuple(int(channel[2:]) for channel in config.extras["off_channels"])
-        self._status_inputs = tuple(int(channel[2:]) for channel in config.extras["status_inputs"])
-        self._status_outputs = tuple(int(channel[2:]) for channel in config.extras["status_outputs"])
+        self._status_inputs: list[int] = []
+        self._status_outputs: list[int] = []
+        for channel in config.extras["status_conditions"]:
+            number = int(channel[2:])
+            if number > self._count:
+                raise ValueError(
+                    f"Status condition {channel} is outside the selected "
+                    f"{self._count}-channel ZLAN model"
+                )
+            group = self._status_inputs if channel.startswith("DI") else self._status_outputs
+            group.append(number)
         self._delay = float(config.extras["step_delay_seconds"])
         if not math.isfinite(self._io_timeout) or self._io_timeout <= 0.0:
             raise ValueError("io_timeout_seconds must be positive")
@@ -42,17 +51,29 @@ class ZlanRelayController(SystemInstrument):
         # 首次使用已有连接；每个未确认的步骤可能使下一步需要新连接。
         steps = max(len(self._on), len(self._off))
         budget = (2 * steps - 1) * self._io_timeout + (steps - 1) * self._delay
-        if budget >= config.operation_timeout_seconds:
-            raise ValueError(
-                f"Relay steps need up to {budget:g} s including possible new TCP "
-                f"connections; reduce the I/O timeout or step delay to stay below "
-                f"{config.operation_timeout_seconds:g} s"
+        operation_limit = config.operation_timeout_seconds
+        if budget >= operation_limit:
+            raise InstrumentError(
+                f"Instrument I/O timeout setting is too high for {steps} relay steps: "
+                f"I/O timeout {self._io_timeout:g} s and step delay {self._delay:g} s "
+                f"need up to {budget:g} s; must be less than {operation_limit:g} s. "
+                "Reduce the I/O timeout or step delay in Instrument Scanner.",
+                "INSTRUMENT_IO_TIMEOUT_TOO_HIGH",
+                "io_timeout_seconds",
             )
         if (
             self._status_inputs and self._status_outputs
-            and 2 * self._io_timeout >= config.operation_timeout_seconds
+            and 2 * self._io_timeout >= operation_limit
         ):
-            raise ValueError("Reduce the I/O timeout to fit both DI and DO status reads")
+            raise InstrumentError(
+                f"Instrument I/O timeout setting is too high: "
+                f"DI and DO status reads can take {2 * self._io_timeout:g} s "
+                f"with an I/O timeout of {self._io_timeout:g} s; "
+                f"must be less than {operation_limit:g} s. "
+                "Reduce the I/O timeout in Instrument Scanner.",
+                "INSTRUMENT_IO_TIMEOUT_TOO_HIGH",
+                "io_timeout_seconds",
+            )
         self._transport_factory = transport_factory
         self._transport: ModbusTcpTransport | None = None
 

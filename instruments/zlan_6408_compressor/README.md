@@ -1,12 +1,14 @@
 # ZLAN Compressor I/O
 
 This System Instrument controls either a four-output ZLAN 6408I or an eight-output
-ZLAN 6842 over Modbus TCP. In the scanner, select any combination of
-**Status Inputs (DI)** and **Status Outputs (DO)**. The status is On only when
-every selected bit is 1, Off if any bit is 0, and blank when neither list has
-a selection. A failed read is a communication error, not Off. The condition
+ZLAN 6842 over Modbus TCP. Add DI and DO channels to the same **Status Conditions**
+list in the scanner. The status is On only when every selected bit is 1,
+Off if any bit is 0, and blank when the list is empty. A failed read is a
+communication error, not Off. The condition
 is used for display and logging, never as an interlock or a condition on a write.
 DO readback alone does not indicate that the compressor is running.
+For the four-channel model, choose only channels 1–4. The driver rejects
+out-of-range conditions before contacting the instrument.
 
 ZLAN does not participate in generic VISA or TCP resource discovery. Its
 `instrument.toml` declares `host`, `port`, I/O timeout, and Modbus unit ID as
@@ -25,8 +27,7 @@ output_count = "8"
 on_channels = ["DO7", "DO8"]
 off_channels = ["DO8", "DO7"]
 step_delay_seconds = 0.3
-status_inputs = []
-status_outputs = ["DO7", "DO8"]
+status_conditions = ["DI1", "DO7"]
 ```
 
 The ZLAN network module must be configured for Modbus TCP. The manual's standard
@@ -37,11 +38,13 @@ The fixed delay is applied between steps, never after the last step. If a write
 cannot be confirmed, its connection is closed and the next step uses a fresh one;
 the failed write is not retried or rolled back. After attempting the remaining
 steps, the action reports any unconfirmed steps as an error. A sequence whose
-I/O timeouts and delays exceed the framework's operation budget is rejected
-before connecting.
+I/O timeouts and delays do not fit the framework's operation budget is rejected
+before connecting with `INSTRUMENT_IO_TIMEOUT_TOO_HIGH`. Reduce the I/O timeout
+or step delay shown in the error; do not treat this as a network failure.
 
 Scanning, connecting, polling and closing OpenLab Control never write DOs.
-This driver requires core v0.20.4.dev3 or newer (below v0.21). Copy the
-`zlan_6408_compressor/` folder into `system_instruments/`, then re-save the
-instrument configuration using the new scanner. Validate the configured order
+This driver works with the existing core v0.20.4.dev3 (or newer below v0.21).
+Copy the `zlan_6408_compressor/` folder into `system_instruments/`. If upgrading
+from the two-list version, select the desired status conditions again and save
+with the existing scanner. Validate the configured order
 without the compressor load connected before using it on the equipment.

@@ -323,8 +323,9 @@ class CryoconControllerTests(unittest.TestCase):
 
         short_budget = _config()
         short_budget.operation_timeout_seconds = 7.5
-        with self.assertRaisesRegex(ValueError, "seven VISA I/O timeouts"):
+        with self.assertRaisesRegex(InstrumentError, "seven VISA I/O timeouts") as error:
             self._controller(FakeTransport(), config=short_budget)
+        self.assertEqual(error.exception.code, "INSTRUMENT_IO_TIMEOUT_TOO_HIGH")
 
     def test_pid_file_missing_or_invalid_fails_before_transport(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

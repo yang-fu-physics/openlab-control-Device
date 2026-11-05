@@ -1,6 +1,6 @@
 id = "zlan_6408_compressor"
 name = "ZLAN Compressor I/O"
-version = "0.2.1.dev1"
+version = "0.2.1.dev2"
 api_version = "4"
 core_requires = ">=0.20.4.dev3,<0.21"
 backend = "backend:ZlanRelayController"
@@ -67,21 +67,14 @@ min = 0.0
 max = 9.0
 
 [[config_fields]]
-id = "status_inputs"
-label = "Status Inputs (DI)"
+id = "status_conditions"
+label = "Status Conditions (4-channel: DI/DO1–4 only)"
 type = "ordered_choices"
 default = []
-options = ["DI1", "DI2", "DI3", "DI4", "DI5", "DI6", "DI7", "DI8"]
-option_count_from = "output_count"
-allow_empty = true
-
-[[config_fields]]
-id = "status_outputs"
-label = "Status Outputs (DO)"
-type = "ordered_choices"
-default = []
-options = ["DO1", "DO2", "DO3", "DO4", "DO5", "DO6", "DO7", "DO8"]
-option_count_from = "output_count"
+options = [
+    "DI1", "DI2", "DI3", "DI4", "DI5", "DI6", "DI7", "DI8",
+    "DO1", "DO2", "DO3", "DO4", "DO5", "DO6", "DO7", "DO8",
+]
 allow_empty = true
 
 [[panels]]

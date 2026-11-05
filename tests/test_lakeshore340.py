@@ -148,6 +148,13 @@ def _config(
 
 
 class LakeShore340Tests(unittest.TestCase):
+    def test_excessive_visa_timeout_has_a_configuration_error_code(self) -> None:
+        config = _config()
+        config.extras["visa_timeout_ms"] = 5000
+        with self.assertRaisesRegex(InstrumentError, "VISA I/O timeout 5000 ms") as error:
+            _backend_class(FakeResourceManager(FakeResource()))(config)
+        self.assertEqual(error.exception.code, "INSTRUMENT_IO_TIMEOUT_TOO_HIGH")
+
     def test_status_and_measurement_use_expected_queries(self) -> None:
         resource = FakeResource()
         manager = FakeResourceManager(resource)
