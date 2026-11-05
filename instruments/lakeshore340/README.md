@@ -1,5 +1,9 @@
 # Lake Shore Model 340
 
+Hardware validation (2026-11-05): the operator confirmed a completed
+temperature-control test on the connected Lake Shore 340. This covers the
+tested configuration, not all loop or sensor combinations.
+
 Version `0.2.1` supports OpenLab Control 0.19–0.20 and keeps a numeric
 `old reading` available while treating unused invalid inputs as unavailable.
 
@@ -30,8 +34,9 @@ reorder these fixed panels; it cannot create extra panels.
 
 The single controller can use `temp_a` or `temp_b` as its reading. Scanner also
 collects `loop1_input`, `loop2_input`, `loop2_enabled`, and `visa_timeout_ms`
-from the manifest defaults. `visa_timeout_ms` is limited to 1–9999 ms so it
-remains shorter than the core's 10-second instrument-operation timeout. The
+from the manifest defaults. `visa_timeout_ms` is limited to 1–9999 ms and must
+be shorter than the core's instrument-operation timeout (30 s since
+OpenLab Control v0.20.4.dev4). The
 chosen controller reading must belong to exactly one enabled physical control
 loop.
 

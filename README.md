@@ -21,10 +21,12 @@ instruments/<id>/
 - `cryocon_22c_24c`：Cryo-con 22C/24C 的 Beta 实现；使用一个 USB VISA 会话，以 B 为
   主温度、A 为监视温度，并记录加热输出和量程。每个物理实例使用独立 PID 文件。
 - `lakeshore340`：Lake Shore 340 的 Beta 实现；使用 GPIB VISA，扫描器可为 controller
-  选择 Temp A 或 Temp B 作为主温度。
+  选择 Temp A 或 Temp B 作为主温度。已完成现场温控实机测试。
 - `zlan_6408_compressor`：ZLAN 6408I（四路）/ 6842（八路）的 Modbus TCP 压缩机控制；
   开关步骤和延时由扫描器配置，显示并记录选定 DI/DO 位的与条件；提供
-  `Compressor On/Off` SEQ 指令。八路顺序动作尚未实机验证。
+  `Compressor On/Off` SEQ 指令。已完成现场压缩机控制实机测试。
+
+以上实机状态由现场于 2026-11-05 确认，仅覆盖实际测试的接线和配置。
 
 真实型号实现必须明确写出真机验证状态。示例骨架不能直接用于真实仪表。
 

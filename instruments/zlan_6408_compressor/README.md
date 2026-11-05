@@ -1,5 +1,9 @@
 # ZLAN Compressor I/O
 
+Hardware validation (2026-11-05): the operator confirmed a completed
+compressor-control test on the installed hardware. This does not establish
+coverage for both controller models or every relay sequence.
+
 This System Instrument controls either a four-output ZLAN 6408I or an eight-output
 ZLAN 6842 over Modbus TCP. Add DI and DO channels to the same **Status Conditions**
 list in the scanner. The status is On only when every selected bit is 1,
