@@ -22,8 +22,9 @@ instruments/<id>/
   主温度、A 为监视温度，并记录加热输出和量程。每个物理实例使用独立 PID 文件。
 - `lakeshore340`：Lake Shore 340 的 Beta 实现；使用 GPIB VISA，扫描器可为 controller
   选择 Temp A 或 Temp B 作为主温度。
-- `zlan_6408_compressor`：ZLAN 6408I 的 Beta 实现；使用 Modbus TCP，以 DO1 控制压缩机，
-  以 DI1 显示并记录状态，并提供 `Compressor On/Off` SEQ 指令。
+- `zlan_6408_compressor`：ZLAN 6408I（四路）/ 6842（八路）的 Modbus TCP 压缩机控制；
+  开关步骤和延时由扫描器配置，显示并记录 DO 输出状态，不读取 DI；提供
+  `Compressor On/Off` SEQ 指令。八路顺序动作尚未实机验证。
 
 真实型号实现必须明确写出真机验证状态。示例骨架不能直接用于真实仪表。
 

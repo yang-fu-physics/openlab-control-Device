@@ -1,7 +1,7 @@
-"""ZLAN 6408I 的最小 Modbus TCP 通讯层。
+"""ZLAN 6408I / 6842 的 Modbus TCP 继电器通讯层。
 
-本文件只实现压缩机所需的两个边界：读取 DI1，以及设置 DO1。Modbus TCP
-响应必须与当前事务、站地址和请求功能一致；写 DO1 时还必须完整回显写入内容。
+DO1 的零基地址为 0x0010；四路和八路型号共用地址布局。
+写入须完整回显请求。此驱动不读取 DI。
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import socket
 import struct
+from time import monotonic
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -45,7 +46,7 @@ def tcp_endpoint(address: str) -> tuple[str, int]:
         or parsed.fragment
     ):
         raise ValueError(
-            "ZLAN 6408 address must use tcp://host:port without a path"
+            "ZLAN address must use tcp://host:port without a path"
         )
     return parsed.hostname, parsed.port
 
@@ -63,30 +64,31 @@ class ModbusTcpTransport:
         host, port = tcp_endpoint(address)
         self._socket = socket_factory((host, port), timeout_seconds)
         self._socket.settimeout(timeout_seconds)
+        self._timeout = timeout_seconds
         self._unit_id = unit_id
         self._transaction_id = 0
 
-    def read_di1(self) -> bool:
+    def read_outputs(self, count: int) -> tuple[bool, ...]:
         response = self._request(
-            struct.pack(">BHH", 0x01, 0x0000, 0x0001)
+            struct.pack(">BHH", 0x01, 0x0010, count)
         )
         if len(response) != 3 or response[:2] != b"\x01\x01":
             raise ZlanProtocolError(
-                f"Invalid DI1 response: {response.hex(' ')}"
+                f"Invalid DO read response: {response.hex(' ')}"
             )
-        return bool(response[2] & 0x01)
+        return tuple(bool(response[2] & (1 << index)) for index in range(count))
 
-    def write_do1(self, enabled: bool) -> None:
+    def write_output(self, channel: int, enabled: bool) -> None:
         request = struct.pack(
             ">BHH",
             0x05,
-            0x0010,
+            0x0010 + channel - 1,
             0xFF00 if enabled else 0x0000,
         )
         response = self._request(request)
         if response != request:
             raise ZlanProtocolError(
-                "DO1 write response does not match the request: "
+                f"DO{channel} write response does not match the request: "
                 f"{response.hex(' ')}"
             )
 
@@ -103,9 +105,11 @@ class ModbusTcpTransport:
             len(pdu) + 1,
             self._unit_id,
         ) + pdu
+        deadline = monotonic() + self._timeout
+        self._socket.settimeout(self._timeout)
         self._socket.sendall(frame)
 
-        header = self._receive_exact(7)
+        header = self._receive_exact(7, deadline)
         response_id, protocol_id, length, unit_id = struct.unpack(
             ">HHHB",
             header,
@@ -119,7 +123,7 @@ class ModbusTcpTransport:
             raise ZlanProtocolError(
                 f"Invalid Modbus TCP header: {header.hex(' ')}"
             )
-        response = self._receive_exact(length - 1)
+        response = self._receive_exact(length - 1, deadline)
         if response[0] == (pdu[0] | 0x80):
             exception_code = response[1] if len(response) == 2 else -1
             raise ZlanProtocolError(
@@ -131,9 +135,13 @@ class ModbusTcpTransport:
             )
         return response
 
-    def _receive_exact(self, size: int) -> bytes:
+    def _receive_exact(self, size: int, deadline: float) -> bytes:
         result = bytearray()
         while len(result) < size:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Modbus response deadline expired")
+            self._socket.settimeout(remaining)
             chunk = self._socket.recv(size - len(result))
             if not chunk:
                 raise ZlanProtocolError(

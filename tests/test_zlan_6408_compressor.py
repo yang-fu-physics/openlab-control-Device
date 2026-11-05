@@ -6,6 +6,7 @@ import struct
 import sys
 import tomllib
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +20,7 @@ from labcontrol.instruments.manifest import (  # noqa: E402
     load_instrument_manifest,
 )
 from zlan_6408_compressor.backend import (  # noqa: E402
-    Zlan6408Compressor,
+    ZlanRelayController,
 )
 from zlan_6408_compressor.zlan_6408 import (  # noqa: E402
     ModbusTcpTransport,
@@ -65,19 +66,19 @@ class FakeSocket:
 
 
 class FakeTransport:
-    def __init__(self, state: bool = False) -> None:
-        self.state = state
-        self.reads = 0
-        self.writes: list[bool] = []
+    def __init__(self, outputs: tuple[bool, ...] = (False,) * 8) -> None:
+        self.outputs = outputs
+        self.reads: list[int] = []
+        self.writes: list[tuple[int, bool]] = []
         self.closed = False
         self.write_error: Exception | None = None
 
-    def read_di1(self) -> bool:
-        self.reads += 1
-        return self.state
+    def read_outputs(self, count: int) -> tuple[bool, ...]:
+        self.reads.append(count)
+        return self.outputs[:count]
 
-    def write_do1(self, enabled: bool) -> None:
-        self.writes.append(enabled)
+    def write_output(self, channel: int, enabled: bool) -> None:
+        self.writes.append((channel, enabled))
         if self.write_error is not None:
             raise self.write_error
 
@@ -85,14 +86,20 @@ class FakeTransport:
         self.closed = True
 
 
-def _config() -> SimpleNamespace:
+def _config(**overrides) -> SimpleNamespace:
     return SimpleNamespace(
         id="compressor",
+        operation_timeout_seconds=10.0,
         extras={
             "host": "192.168.1.20",
             "port": 502,
             "io_timeout_seconds": 1.0,
             "unit_id": 1,
+            "output_count": "4",
+            "on_channels": ["DO1"],
+            "off_channels": ["DO1"],
+            "step_delay_seconds": 0.0,
+            **overrides,
         },
     )
 
@@ -117,8 +124,8 @@ class ZlanProtocolTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     tcp_endpoint(address)
 
-    def test_reads_di1_with_modbus_tcp_function_01(self) -> None:
-        socket = FakeSocket(_frame(1, b"\x01\x01\x01"))
+    def test_reads_do_coils_only_with_modbus_tcp_function_01(self) -> None:
+        socket = FakeSocket(_frame(1, b"\x01\x01\xc0"))
         endpoints: list[tuple[tuple[str, int], float]] = []
 
         def factory(endpoint, timeout):
@@ -131,16 +138,16 @@ class ZlanProtocolTests(unittest.TestCase):
             1,
             factory,
         )
-        self.assertTrue(transport.read_di1())
+        self.assertEqual(socket.timeout, 1.5)
+        self.assertEqual(transport.read_outputs(8), (False,) * 6 + (True, True))
         self.assertEqual(
             socket.sent,
-            [_frame(1, b"\x01\x00\x00\x00\x01")],
+            [_frame(1, b"\x01\x00\x10\x00\x08")],
         )
         self.assertEqual(
             endpoints,
             [(('192.168.1.20', 502), 1.5)],
         )
-        self.assertEqual(socket.timeout, 1.5)
 
     def test_writes_do1_and_requires_the_exact_echo(self) -> None:
         on = b"\x05\x00\x10\xff\x00"
@@ -153,8 +160,8 @@ class ZlanProtocolTests(unittest.TestCase):
             lambda _endpoint, _timeout: socket,
         )
 
-        transport.write_do1(True)
-        transport.write_do1(False)
+        transport.write_output(1, True)
+        transport.write_output(1, False)
 
         self.assertEqual(
             socket.sent,
@@ -171,19 +178,35 @@ class ZlanProtocolTests(unittest.TestCase):
             lambda _endpoint, _timeout: mismatch,
         )
         with self.assertRaises(ZlanProtocolError):
-            mismatched_transport.write_do1(True)
+            mismatched_transport.write_output(1, True)
+
+    def test_do7_and_do8_use_their_own_addresses(self) -> None:
+        steps = [
+            (7, True, b"\x05\x00\x16\xff\x00"),
+            (8, True, b"\x05\x00\x17\xff\x00"),
+            (8, False, b"\x05\x00\x17\x00\x00"),
+            (7, False, b"\x05\x00\x16\x00\x00"),
+        ]
+        frames = [_frame(index, pdu) for index, (_, _, pdu) in enumerate(steps, 1)]
+        socket = FakeSocket(b"".join(frames))
+        transport = ModbusTcpTransport(
+            "tcp://192.168.1.20:502", 1.0, 1, lambda *_: socket,
+        )
+        for channel, enabled, _ in steps:
+            transport.write_output(channel, enabled)
+        self.assertEqual(socket.sent, frames)
 
 
 class ZlanBackendTests(unittest.TestCase):
-    def test_open_and_poll_read_di1_without_changing_do1(self) -> None:
-        transport = FakeTransport(state=True)
+    def test_open_and_poll_read_only_do_coils_without_changing_outputs(self) -> None:
+        transport = FakeTransport(outputs=(True, False, False, False))
         endpoints: list[tuple[str, float, int]] = []
 
         def transport_factory(address, timeout, unit_id):
             endpoints.append((address, timeout, unit_id))
             return transport
 
-        controller = Zlan6408Compressor(
+        controller = ZlanRelayController(
             _config(),
             transport_factory,
         )
@@ -194,44 +217,65 @@ class ZlanBackendTests(unittest.TestCase):
             [("tcp://192.168.1.20:502", 1.0, 1)],
         )
         self.assertEqual(controller.read_status(), {"value": 1.0})
-        self.assertEqual(transport.reads, 2)
+        self.assertEqual(transport.reads, [4, 4])
         self.assertEqual(transport.writes, [])
 
         controller.close()
         self.assertTrue(transport.closed)
         self.assertEqual(transport.writes, [])
 
-    def test_actions_write_do1_once_and_do_not_predict_di1(self) -> None:
-        transport = FakeTransport(state=False)
-        controller = Zlan6408Compressor(
-            _config(),
-            lambda _address, _timeout, _unit_id: transport,
-        )
-        controller.open()
-
-        controller.execute_sequence_command("compressor_on")
-        controller.execute_sequence_command("compressor_off")
-
-        self.assertEqual(transport.writes, [True, False])
-        self.assertEqual(controller.read_status(), {"value": 0.0})
-
-    def test_unconfirmed_write_uses_the_core_uncertain_result_code(self) -> None:
+    def test_actions_run_in_configured_order_with_delay_between_steps(self) -> None:
         transport = FakeTransport()
-        controller = Zlan6408Compressor(
-            _config(),
+        controller = ZlanRelayController(
+            _config(output_count="8", on_channels=["DO7", "DO8"],
+                    off_channels=["DO8", "DO7"], step_delay_seconds=0.3),
             lambda _address, _timeout, _unit_id: transport,
         )
         controller.open()
-        transport.write_error = ZlanProtocolError("mismatched echo")
 
-        with self.assertRaises(InstrumentError) as captured:
+        delays = []
+        with patch("zlan_6408_compressor.backend.sleep",
+                   side_effect=lambda delay: delays.append((delay, list(transport.writes)))):
             controller.execute_sequence_command("compressor_on")
+            controller.execute_sequence_command("compressor_off")
+        self.assertEqual(transport.writes, [(7, True), (8, True), (8, False), (7, False)])
+        self.assertEqual(delays, [
+            (0.3, [(7, True)]),
+            (0.3, [(7, True), (8, True), (8, False)]),
+        ])
+        self.assertEqual(controller.read_status(), {"value": 0.0})
+        transport.outputs = (False,) * 6 + (True, False)
+        self.assertEqual(controller.read_status(), {"value": None})
 
-        self.assertEqual(
-            captured.exception.code,
-            "INSTRUMENT_WRITE_RESULT_UNKNOWN",
-        )
-        self.assertEqual(transport.writes, [True])
+    def test_unconfirmed_step_continues_on_fresh_connection_for_both_actions(self) -> None:
+        for enabled, command, channels in (
+            (True, "compressor_on", [7, 8]),
+            (False, "compressor_off", [8, 7]),
+        ):
+            with self.subTest(command=command):
+                first, second = FakeTransport(), FakeTransport()
+                connections = iter((first, second))
+                controller = ZlanRelayController(
+                    _config(output_count="8", on_channels=["DO7", "DO8"],
+                            off_channels=["DO8", "DO7"]),
+                    lambda *_: next(connections),
+                )
+                controller.open()
+                first.write_error = TimeoutError("no reply")
+                with self.assertRaisesRegex(
+                    InstrumentError, f"step 1 DO{channels[0]} unconfirmed",
+                ) as captured:
+                    controller.execute_sequence_command(command)
+                self.assertEqual(captured.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
+                self.assertEqual(first.writes, [(channels[0], enabled)])
+                self.assertTrue(first.closed)
+                self.assertEqual(second.writes, [(channels[1], enabled)])
+
+    def test_impossible_step_budget_is_rejected_before_open(self) -> None:
+        with self.assertRaisesRegex(ValueError, "reduce the I/O timeout or step delay"):
+            ZlanRelayController(_config(
+                output_count="8", on_channels=["DO7", "DO8"], step_delay_seconds=8.0,
+            ))
 
     def test_manifest_selects_switch_panel_and_commands(self) -> None:
         instrument = ROOT / "instruments" / "zlan_6408_compressor"
@@ -245,14 +289,15 @@ class ZlanBackendTests(unittest.TestCase):
             manifest = tomllib.load(handle)
         self.assertEqual(
             [field["id"] for field in manifest["config_fields"]],
-            ["host", "port", "io_timeout_seconds", "unit_id"],
+            ["host", "port", "io_timeout_seconds", "unit_id", "output_count",
+             "on_channels", "off_channels", "step_delay_seconds"],
         )
         self.assertEqual(
             manifest["panels"],
             [
                 {
                     "id": "compressor",
-                    "label": "Compressor",
+                    "label": "Compressor Relays",
                     "template": "switch",
                     "reading": "compressor_state",
                     "commands": ["compressor_on", "compressor_off"],

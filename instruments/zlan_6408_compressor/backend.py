@@ -1,17 +1,18 @@
-"""用 ZLAN 6408I 的 DO1 控制压缩机，并以 DI1 显示实际状态。"""
+"""按现场配置，用 ZLAN 继电器顺序控制压缩机。"""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 import math
+from time import sleep
 
 from labcontrol.instruments.base import InstrumentError, SystemInstrument
 
 from .zlan_6408 import ModbusTcpTransport, ZlanProtocolError
 
 
-class Zlan6408Compressor(SystemInstrument):
-    """DO1 写入与 DI1 状态相互独立的压缩机 System Instrument。"""
+class ZlanRelayController(SystemInstrument):
+    """手动和 SEQ 都使用扫描器配置的继电器顺序。"""
 
     def __init__(
         self,
@@ -28,77 +29,103 @@ class Zlan6408Compressor(SystemInstrument):
         self._address = f"tcp://{host}:{int(config.extras['port'])}"
         self._io_timeout = float(config.extras["io_timeout_seconds"])
         self._unit_id = int(config.extras["unit_id"])
+        self._count = int(config.extras["output_count"])
+        self._on = tuple(int(channel[2:]) for channel in config.extras["on_channels"])
+        self._off = tuple(int(channel[2:]) for channel in config.extras["off_channels"])
+        self._channels = set(self._on) | set(self._off)
+        self._delay = float(config.extras["step_delay_seconds"])
         if not math.isfinite(self._io_timeout) or self._io_timeout <= 0.0:
             raise ValueError("io_timeout_seconds must be positive")
         if not 1 <= self._unit_id <= 247:
             raise ValueError("unit_id must be from 1 to 247")
+        # 首次使用已有连接；每个未确认的步骤可能使下一步需要新连接。
+        steps = max(len(self._on), len(self._off))
+        budget = (2 * steps - 1) * self._io_timeout + (steps - 1) * self._delay
+        if budget >= config.operation_timeout_seconds:
+            raise ValueError(
+                f"Relay steps need up to {budget:g} s including possible new TCP "
+                f"connections; reduce the I/O timeout or step delay to stay below "
+                f"{config.operation_timeout_seconds:g} s"
+            )
         self._transport_factory = transport_factory
         self._transport: ModbusTcpTransport | None = None
 
+    def _connect(self) -> ModbusTcpTransport:
+        return self._transport_factory(self._address, self._io_timeout, self._unit_id)
+
     def open(self) -> None:
         try:
-            transport = self._transport_factory(
-                self._address,
-                self._io_timeout,
-                self._unit_id,
-            )
-        except OSError as exc:
-            raise InstrumentError(
-                f"Could not connect to ZLAN 6408: {exc}",
-                "ZLAN_CONNECT_FAILED",
-                self._address,
-            ) from exc
-        try:
-            transport.read_di1()
+            self._transport = self._connect()
+            self._transport.read_outputs(self._count)
         except (OSError, ZlanProtocolError) as exc:
-            transport.close()
+            self.close()
             raise InstrumentError(
-                f"Could not connect to ZLAN 6408: {exc}",
+                f"Could not connect to ZLAN: {exc}",
                 "ZLAN_CONNECT_FAILED",
                 self._address,
             ) from exc
-        self._transport = transport
 
     def close(self) -> None:
         transport, self._transport = self._transport, None
         if transport is not None:
             transport.close()
 
-    def read_status(self) -> dict[str, float]:
+    def read_status(self) -> dict[str, float | None]:
         try:
-            enabled = self._require_transport().read_di1()
+            states = self._require_transport().read_outputs(self._count)
         except (OSError, ZlanProtocolError) as exc:
             raise InstrumentError(
-                f"Could not read compressor state from DI1: {exc}",
-                "ZLAN_DI1_READ_FAILED",
+                f"Could not read ZLAN relay outputs: {exc}",
+                "ZLAN_DO_READ_FAILED",
                 self._address,
             ) from exc
-        return {"value": 1.0 if enabled else 0.0}
+        if all(states[channel - 1] for channel in self._on):
+            return {"value": 1.0}
+        if not any(states[channel - 1] for channel in self._channels):
+            return {"value": 0.0}
+        return {"value": None}
 
     def execute_sequence_command(self, command_id: str) -> None:
         if command_id == "compressor_on":
             enabled = True
+            channels = self._on
         elif command_id == "compressor_off":
             enabled = False
+            channels = self._off
         else:
             raise InstrumentError(
                 f"Unknown ZLAN compressor command: {command_id}",
                 "UNSUPPORTED_SEQUENCE_COMMAND",
                 command_id,
             )
-        try:
-            self._require_transport().write_do1(enabled)
-        except (OSError, ZlanProtocolError) as exc:
+        self._require_transport()
+        failures = []
+        for index, channel in enumerate(channels):
+            if index and self._delay:
+                sleep(self._delay)
+            if self._transport is None:
+                try:
+                    self._transport = self._connect()
+                except OSError as exc:
+                    failures.append(f"step {index + 1} DO{channel} not sent: {exc}")
+                    continue
+            try:
+                self._transport.write_output(channel, enabled)
+            except (OSError, ZlanProtocolError) as exc:
+                failures.append(f"step {index + 1} DO{channel} unconfirmed: {exc}")
+                # 迟到的回包不能用于下一步。丢弃连接，不重发本步。
+                self.close()
+        if failures:
             raise InstrumentError(
-                f"Could not confirm DO1 write: {exc}",
+                f"{command_id}: " + "; ".join(failures),
                 "INSTRUMENT_WRITE_RESULT_UNKNOWN",
                 self._address,
-            ) from exc
+            )
 
     def _require_transport(self) -> ModbusTcpTransport:
         if self._transport is None:
             raise InstrumentError(
-                "ZLAN 6408 is not connected",
+                "ZLAN is not connected",
                 "ZLAN_NOT_CONNECTED",
                 self._address,
             )
