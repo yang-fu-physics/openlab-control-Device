@@ -1,8 +1,8 @@
 id = "zlan_6408_compressor"
 name = "ZLAN Compressor I/O"
-version = "0.2.0"
+version = "0.2.1.dev1"
 api_version = "4"
-core_requires = ">=0.19,<0.21"
+core_requires = ">=0.20.4.dev3,<0.21"
 backend = "backend:ZlanRelayController"
 kinds = ["monitor"]
 
@@ -66,15 +66,33 @@ default = 0.0
 min = 0.0
 max = 9.0
 
+[[config_fields]]
+id = "status_inputs"
+label = "Status Inputs (DI)"
+type = "ordered_choices"
+default = []
+options = ["DI1", "DI2", "DI3", "DI4", "DI5", "DI6", "DI7", "DI8"]
+option_count_from = "output_count"
+allow_empty = true
+
+[[config_fields]]
+id = "status_outputs"
+label = "Status Outputs (DO)"
+type = "ordered_choices"
+default = []
+options = ["DO1", "DO2", "DO3", "DO4", "DO5", "DO6", "DO7", "DO8"]
+option_count_from = "output_count"
+allow_empty = true
+
 [[panels]]
 id = "compressor"
-label = "Compressor Relays"
+label = "Compressor"
 template = "switch"
 reading = "compressor_state"
 commands = ["compressor_on", "compressor_off"]
 
 [readings.compressor_state]
-label = "Relay Output State (not compressor feedback)"
+label = "Configured Status (all selected DI/DO active)"
 
 [[sequence_commands]]
 id = "compressor_on"

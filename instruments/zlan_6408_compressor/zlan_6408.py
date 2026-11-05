@@ -1,7 +1,7 @@
 """ZLAN 6408I / 6842 的 Modbus TCP 继电器通讯层。
 
-DO1 的零基地址为 0x0010；四路和八路型号共用地址布局。
-写入须完整回显请求。此驱动不读取 DI。
+DI1 的零基地址为 0x0000，DO1 为 0x0010；四路和八路型号共用地址布局。
+写入须完整回显请求。
 """
 
 from __future__ import annotations
@@ -68,13 +68,19 @@ class ModbusTcpTransport:
         self._unit_id = unit_id
         self._transaction_id = 0
 
+    def read_inputs(self, count: int) -> tuple[bool, ...]:
+        return self._read_bits(0x0000, count, "DI")
+
     def read_outputs(self, count: int) -> tuple[bool, ...]:
+        return self._read_bits(0x0010, count, "DO")
+
+    def _read_bits(self, address: int, count: int, label: str) -> tuple[bool, ...]:
         response = self._request(
-            struct.pack(">BHH", 0x01, 0x0010, count)
+            struct.pack(">BHH", 0x01, address, count)
         )
         if len(response) != 3 or response[:2] != b"\x01\x01":
             raise ZlanProtocolError(
-                f"Invalid DO read response: {response.hex(' ')}"
+                f"Invalid {label} read response: {response.hex(' ')}"
             )
         return tuple(bool(response[2] & (1 << index)) for index in range(count))
 

@@ -1,10 +1,12 @@
 # ZLAN Compressor I/O
 
 This System Instrument controls either a four-output ZLAN 6408I or an eight-output
-ZLAN 6842 over Modbus TCP. It does not read DI. The status is based on the device's
-DO coil readback, not compressor feedback: On means all configured On outputs
-are closed; Off means all outputs used by either action are open. Other states
-have no On/Off reading.
+ZLAN 6842 over Modbus TCP. In the scanner, select any combination of
+**Status Inputs (DI)** and **Status Outputs (DO)**. The status is On only when
+every selected bit is 1, Off if any bit is 0, and blank when neither list has
+a selection. A failed read is a communication error, not Off. The condition
+is used for display and logging, never as an interlock or a condition on a write.
+DO readback alone does not indicate that the compressor is running.
 
 ZLAN does not participate in generic VISA or TCP resource discovery. Its
 `instrument.toml` declares `host`, `port`, I/O timeout, and Modbus unit ID as
@@ -23,6 +25,8 @@ output_count = "8"
 on_channels = ["DO7", "DO8"]
 off_channels = ["DO8", "DO7"]
 step_delay_seconds = 0.3
+status_inputs = []
+status_outputs = ["DO7", "DO8"]
 ```
 
 The ZLAN network module must be configured for Modbus TCP. The manual's standard
@@ -37,6 +41,7 @@ I/O timeouts and delays exceed the framework's operation budget is rejected
 before connecting.
 
 Scanning, connecting, polling and closing OpenLab Control never write DOs.
-Update the core and this driver together, then re-save the instrument configuration
-using the new scanner. Validate the configured order without the compressor
-load connected before using it on the equipment.
+This driver requires core v0.20.4.dev3 or newer (below v0.21). Copy the
+`zlan_6408_compressor/` folder into `system_instruments/`, then re-save the
+instrument configuration using the new scanner. Validate the configured order
+without the compressor load connected before using it on the equipment.

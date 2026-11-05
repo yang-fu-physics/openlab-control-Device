@@ -32,7 +32,8 @@ class ZlanRelayController(SystemInstrument):
         self._count = int(config.extras["output_count"])
         self._on = tuple(int(channel[2:]) for channel in config.extras["on_channels"])
         self._off = tuple(int(channel[2:]) for channel in config.extras["off_channels"])
-        self._channels = set(self._on) | set(self._off)
+        self._status_inputs = tuple(int(channel[2:]) for channel in config.extras["status_inputs"])
+        self._status_outputs = tuple(int(channel[2:]) for channel in config.extras["status_outputs"])
         self._delay = float(config.extras["step_delay_seconds"])
         if not math.isfinite(self._io_timeout) or self._io_timeout <= 0.0:
             raise ValueError("io_timeout_seconds must be positive")
@@ -47,6 +48,11 @@ class ZlanRelayController(SystemInstrument):
                 f"connections; reduce the I/O timeout or step delay to stay below "
                 f"{config.operation_timeout_seconds:g} s"
             )
+        if (
+            self._status_inputs and self._status_outputs
+            and 2 * self._io_timeout >= config.operation_timeout_seconds
+        ):
+            raise ValueError("Reduce the I/O timeout to fit both DI and DO status reads")
         self._transport_factory = transport_factory
         self._transport: ModbusTcpTransport | None = None
 
@@ -56,7 +62,7 @@ class ZlanRelayController(SystemInstrument):
     def open(self) -> None:
         try:
             self._transport = self._connect()
-            self._transport.read_outputs(self._count)
+            self._read_state()
         except (OSError, ZlanProtocolError) as exc:
             self.close()
             raise InstrumentError(
@@ -72,18 +78,28 @@ class ZlanRelayController(SystemInstrument):
 
     def read_status(self) -> dict[str, float | None]:
         try:
-            states = self._require_transport().read_outputs(self._count)
+            return {"value": self._read_state()}
         except (OSError, ZlanProtocolError) as exc:
             raise InstrumentError(
-                f"Could not read ZLAN relay outputs: {exc}",
-                "ZLAN_DO_READ_FAILED",
+                f"Could not read ZLAN status: {exc}",
+                "ZLAN_STATUS_READ_FAILED",
                 self._address,
             ) from exc
-        if all(states[channel - 1] for channel in self._on):
-            return {"value": 1.0}
-        if not any(states[channel - 1] for channel in self._channels):
-            return {"value": 0.0}
-        return {"value": None}
+
+    def _read_state(self) -> float | None:
+        transport = self._require_transport()
+        if not self._status_inputs and not self._status_outputs:
+            # 没配置状态条件时仍确认通讯，不能把连通性当作 On/Off。
+            transport.read_outputs(self._count)
+            return None
+        states: list[bool] = []
+        if self._status_inputs:
+            inputs = transport.read_inputs(self._count)
+            states.extend(inputs[channel - 1] for channel in self._status_inputs)
+        if self._status_outputs:
+            outputs = transport.read_outputs(self._count)
+            states.extend(outputs[channel - 1] for channel in self._status_outputs)
+        return float(all(states))
 
     def execute_sequence_command(self, command_id: str) -> None:
         if command_id == "compressor_on":

@@ -66,15 +66,27 @@ class FakeSocket:
 
 
 class FakeTransport:
-    def __init__(self, outputs: tuple[bool, ...] = (False,) * 8) -> None:
+    def __init__(
+        self, outputs: tuple[bool, ...] = (False,) * 8,
+        inputs: tuple[bool, ...] = (False,) * 8,
+    ) -> None:
         self.outputs = outputs
+        self.inputs = inputs
         self.reads: list[int] = []
+        self.input_reads: list[int] = []
         self.writes: list[tuple[int, bool]] = []
         self.closed = False
         self.write_error: Exception | None = None
+        self.output_read_error: OSError | None = None
+
+    def read_inputs(self, count: int) -> tuple[bool, ...]:
+        self.input_reads.append(count)
+        return self.inputs[:count]
 
     def read_outputs(self, count: int) -> tuple[bool, ...]:
         self.reads.append(count)
+        if self.output_read_error is not None:
+            raise self.output_read_error
         return self.outputs[:count]
 
     def write_output(self, channel: int, enabled: bool) -> None:
@@ -99,6 +111,8 @@ def _config(**overrides) -> SimpleNamespace:
             "on_channels": ["DO1"],
             "off_channels": ["DO1"],
             "step_delay_seconds": 0.0,
+            "status_inputs": [],
+            "status_outputs": [],
             **overrides,
         },
     )
@@ -149,6 +163,16 @@ class ZlanProtocolTests(unittest.TestCase):
             [(('192.168.1.20', 502), 1.5)],
         )
 
+    def test_reads_di_at_zero_not_at_the_do_address(self) -> None:
+        for count, bit in ((4, 0x08), (8, 0x80)):
+            with self.subTest(count=count):
+                socket = FakeSocket(_frame(1, bytes((1, 1, bit))))
+                transport = ModbusTcpTransport(
+                    "tcp://192.168.1.20:502", 1.0, 1, lambda *_: socket,
+                )
+                self.assertEqual(transport.read_inputs(count), (False,) * (count - 1) + (True,))
+                self.assertEqual(socket.sent, [_frame(1, struct.pack(">BHH", 1, 0, count))])
+
     def test_writes_do1_and_requires_the_exact_echo(self) -> None:
         on = b"\x05\x00\x10\xff\x00"
         off = b"\x05\x00\x10\x00\x00"
@@ -198,7 +222,7 @@ class ZlanProtocolTests(unittest.TestCase):
 
 
 class ZlanBackendTests(unittest.TestCase):
-    def test_open_and_poll_read_only_do_coils_without_changing_outputs(self) -> None:
+    def test_unconfigured_status_checks_connection_without_showing_on_or_off(self) -> None:
         transport = FakeTransport(outputs=(True, False, False, False))
         endpoints: list[tuple[str, float, int]] = []
 
@@ -216,8 +240,9 @@ class ZlanBackendTests(unittest.TestCase):
             endpoints,
             [("tcp://192.168.1.20:502", 1.0, 1)],
         )
-        self.assertEqual(controller.read_status(), {"value": 1.0})
+        self.assertEqual(controller.read_status(), {"value": None})
         self.assertEqual(transport.reads, [4, 4])
+        self.assertEqual(transport.input_reads, [])
         self.assertEqual(transport.writes, [])
 
         controller.close()
@@ -243,9 +268,45 @@ class ZlanBackendTests(unittest.TestCase):
             (0.3, [(7, True)]),
             (0.3, [(7, True), (8, True), (8, False)]),
         ])
-        self.assertEqual(controller.read_status(), {"value": 0.0})
-        transport.outputs = (False,) * 6 + (True, False)
         self.assertEqual(controller.read_status(), {"value": None})
+
+    def test_status_and_supports_either_group_or_both(self) -> None:
+        for di, do in ((["DI2", "DI4"], []), ([], ["DO2", "DO4"]), (["DI2"], ["DO4"])):
+            with self.subTest(di=di, do=do):
+                transport = FakeTransport(
+                    inputs=(False, True, False, True),
+                    outputs=(False, True, False, True),
+                )
+                controller = ZlanRelayController(
+                    _config(status_inputs=di, status_outputs=do), lambda *_: transport,
+                )
+                controller.open()
+                self.assertEqual(controller.read_status(), {"value": 1.0})
+                if do:
+                    transport.outputs = (False, True, False, False)
+                else:
+                    transport.inputs = (False, True, False, False)
+                self.assertEqual(controller.read_status(), {"value": 0.0})
+                self.assertEqual(transport.input_reads, [4, 4, 4] if di else [])
+                self.assertEqual(transport.reads, [4, 4, 4] if do else [])
+                self.assertEqual(transport.writes, [])
+
+    def test_failed_status_read_is_not_off_even_when_another_condition_is_false(self) -> None:
+        transport = FakeTransport()
+        controller = ZlanRelayController(
+            _config(status_inputs=["DI1"], status_outputs=["DO1"]), lambda *_: transport,
+        )
+        controller.open()
+        transport.output_read_error = TimeoutError("DO reply timed out")
+        with self.assertRaisesRegex(InstrumentError, "DO reply timed out") as error:
+            controller.read_status()
+        self.assertEqual(error.exception.code, "ZLAN_STATUS_READ_FAILED")
+
+    def test_mixed_status_io_budget_is_checked(self) -> None:
+        with self.assertRaisesRegex(ValueError, "fit both DI and DO"):
+            ZlanRelayController(_config(
+                status_inputs=["DI1"], status_outputs=["DO1"], io_timeout_seconds=5.0,
+            ))
 
     def test_unconfirmed_step_continues_on_fresh_connection_for_both_actions(self) -> None:
         for enabled, command, channels in (
@@ -290,14 +351,14 @@ class ZlanBackendTests(unittest.TestCase):
         self.assertEqual(
             [field["id"] for field in manifest["config_fields"]],
             ["host", "port", "io_timeout_seconds", "unit_id", "output_count",
-             "on_channels", "off_channels", "step_delay_seconds"],
+             "on_channels", "off_channels", "step_delay_seconds", "status_inputs", "status_outputs"],
         )
         self.assertEqual(
             manifest["panels"],
             [
                 {
                     "id": "compressor",
-                    "label": "Compressor Relays",
+                    "label": "Compressor",
                     "template": "switch",
                     "reading": "compressor_state",
                     "commands": ["compressor_on", "compressor_off"],
