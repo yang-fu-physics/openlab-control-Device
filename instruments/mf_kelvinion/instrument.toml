@@ -1,0 +1,152 @@
+id = "mf_kelvinion"
+name = "MultiFields Kelvinion"
+version = "0.1.0.dev1"
+api_version = "4"
+core_requires = ">=0.20.5,<0.21"
+backend = "backend:Kelvinion"
+kinds = ["temperature"]
+
+[discovery]
+identity_pattern = '(?i)^\[?MultiFields Technologies\s*,\s*Kelvinion\s*,'
+
+[[config_fields]]
+id = "loop2_enabled"
+label = "Control Output 2 (B)"
+type = "boolean"
+default = false
+
+[[config_fields]]
+id = "loop2_input"
+label = "Output 2 Sensor Input"
+type = "choice"
+default = "B"
+options = ["A", "B", "C", "D", "E", "F", "G", "H"]
+
+[[config_fields]]
+id = "loop2_setpoint"
+label = "Output 2 Target Formula (x = primary target in K)"
+type = "string"
+default = "x"
+
+[[config_fields]]
+id = "visa_timeout_ms"
+label = "VISA I/O Timeout (ms)"
+type = "integer"
+default = 1000
+min = 1
+max = 9999
+
+[[controls]]
+id = "main"
+label = "Sample Temperature"
+
+[[panels]]
+id = "control"
+label = "Temperature"
+template = "controller"
+control = "main"
+reading_options = ["temp_a", "temp_b", "temp_c", "temp_d", "temp_e", "temp_f", "temp_g", "temp_h"]
+default_reading = "temp_a"
+min_value = 3.0
+max_value = 300.0
+default_rate_per_minute = 3.0
+max_rate_per_minute = 10.0
+stability_tolerance = 0.05
+stability_max_slope_per_minute = 0.03
+stability_dwell_seconds = 10.0
+stability_timeout_seconds = 1800.0
+stability_window_seconds = 5.0
+
+[[panels]]
+id = "temperatures"
+label = "Temp A / B"
+template = "readout_grid"
+readings = ["temp_a", "temp_b"]
+
+[[panels]]
+id = "loop_1"
+label = "Output 1 (A)"
+template = "readout_grid"
+readings = ["loop_1_target", "loop_1_rate", "loop_1_power", "loop_1_range"]
+
+[[panels]]
+id = "loop_2"
+label = "Output 2 (B)"
+template = "readout_grid"
+readings = ["loop_2_target", "loop_2_rate", "loop_2_power", "loop_2_range"]
+
+[readings.temp_a]
+label = "Temp A"
+unit = "K"
+decimals = 3
+
+[readings.temp_b]
+label = "Temp B"
+unit = "K"
+decimals = 3
+
+[readings.temp_c]
+label = "Temp C"
+unit = "K"
+decimals = 3
+
+[readings.temp_d]
+label = "Temp D"
+unit = "K"
+decimals = 3
+
+[readings.temp_e]
+label = "Temp E"
+unit = "K"
+decimals = 3
+
+[readings.temp_f]
+label = "Temp F"
+unit = "K"
+decimals = 3
+
+[readings.temp_g]
+label = "Temp G"
+unit = "K"
+decimals = 3
+
+[readings.temp_h]
+label = "Temp H"
+unit = "K"
+decimals = 3
+
+[readings.loop_1_target]
+label = "Target"
+unit = "K"
+decimals = 2
+
+[readings.loop_1_rate]
+label = "Ramp Rate"
+unit = "K/min"
+decimals = 2
+
+[readings.loop_1_power]
+label = "Heater Output"
+unit = "%"
+decimals = 1
+
+[readings.loop_1_range]
+label = "Heater Range"
+
+[readings.loop_2_target]
+label = "Target"
+unit = "K"
+decimals = 2
+
+[readings.loop_2_rate]
+label = "Ramp Rate"
+unit = "K/min"
+decimals = 2
+
+[readings.loop_2_power]
+label = "Heater Output"
+unit = "%"
+decimals = 1
+
+[readings.loop_2_range]
+label = "Heater Range"
