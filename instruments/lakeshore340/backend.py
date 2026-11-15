@@ -4,6 +4,7 @@ import math
 
 import pyvisa
 
+from labcontrol.formatting import require_precision
 from labcontrol.instruments.base import (
     InstrumentError,
     SafetyViolation,
@@ -284,8 +285,11 @@ class LakeShore340(SystemInstrument):
                 self.config.id,
             )
 
-        rate_text = f"{rate_per_minute:.9g}"
-        value_text = f"{value:.9g}"
+        try:
+            rate_text = f"{require_precision(rate_per_minute, 1, 'Ramp rate'):.9g}"
+            value_text = f"{require_precision(value, 4 if value < 10 else 3, 'Setpoint'):.9g}"
+        except ValueError as exc:
+            raise SafetyViolation(str(exc), "SETPOINT_PRECISION", self.config.id) from exc
         for loop in self._active_loops:
             self._write(f"RAMP {loop},1,{rate_text}")
         for loop in self._active_loops:
@@ -301,7 +305,7 @@ class LakeShore340(SystemInstrument):
         )
         for loop in self._active_loops:
             value = float(temperatures[self._loop_inputs[loop]])
-            self._write(f"SETP {loop},{value:.9g}")
+            self._write(f"SETP {loop},{round(value, 4 if value < 10 else 3):.9g}")
         for loop in self._active_loops:
             self._write(f"RAMP {loop},0")
 

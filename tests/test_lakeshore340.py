@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE_ROOT = ROOT.parent / "OpenLabControl"
 sys.path.insert(0, str(CORE_ROOT / "src"))
 
-from labcontrol.instruments.base import InstrumentError  # noqa: E402
+from labcontrol.instruments.base import InstrumentError, SafetyViolation  # noqa: E402
 from labcontrol.instruments.manifest import (  # noqa: E402
     load_instrument_manifest,
 )
@@ -148,6 +148,20 @@ def _config(
 
 
 class LakeShore340Tests(unittest.TestCase):
+    def test_setpoint_and_rate_resolution_rejected_before_any_write(self) -> None:
+        resource = FakeResource()
+        backend = _backend_class(FakeResourceManager(resource))(_config())
+        backend.open()
+        for target, rate in ((9.12345, 2.5), (10.1234, 2.5), (9.1234, 2.55)):
+            with self.subTest(target=target, rate=rate), self.assertRaisesRegex(
+                SafetyViolation, "decimal places"
+            ):
+                backend.set_target(target, rate, control="main")
+            self.assertEqual(resource.writes, [])
+        for target in (9.1234, 10.123):
+            backend.set_target(target, 2.5, control="main")
+            self.assertEqual(resource.writes[-2:], [f"SETP 1,{target}", f"SETP 2,{target}"])
+
     def test_excessive_visa_timeout_has_a_configuration_error_code(self) -> None:
         config = _config()
         config.extras["visa_timeout_ms"] = 5000

@@ -44,3 +44,12 @@ loop.
 `loop_2` readout panel hides that panel but does not change physical control
 behavior. Neither setting sends a CSET command. Confirm all safety limits and
 stability values in the scanner preview for the actual cryostat before saving.
+
+For kelvin control, manual and SEQ setpoints accept up to four decimal places
+below 10 K and three at or above 10 K. Ramp rates accept one decimal place
+(0.1 K/min resolution). This follows sections 6.10–6.11 of the
+[Model 340 user manual](https://www.lakeshore.com/docs/default-source/product-downloads/340_manual.pdf).
+Use a matching OpenLab Control build that supports the controller precision
+fields in this manifest; the already-published v0.20.5 build does not.
+OpenLab rejects excess digits before writing; it does not round user-entered
+setpoints or ramps. Hold Current uses the nearest supported setpoint.
