@@ -1,56 +1,47 @@
-# OpenLab Control System Instruments
+# OpenLab Control — System Instruments（系统仪表仓库）
 
-本仓库保存 OpenLab Control 的 System Instrument。它们负责主温度、主磁场和长期只读监视，
-不负责电阻、电压等按需测量；后者属于 Measurement Module。
+本仓库维护 **OpenLab Control** 配套的 **System Instrument** 驱动，用于管理实验期间常驻的底层环境设备：主温控仪、磁场控制器、压缩机开关以及只读监控仪表。
 
-每个 `instruments/<id>/` 都按一种物理仪表型号/协议组织，是一个可独立手动安装的完整
-目录。不要按 TempA、TempB 或“主/副温度”拆分；同一物理地址只允许一个实例和一个会话：
+> 如果你在找电阻表、源表、电桥、锁相放大器等按需启用的测量插件，请前往 [openlab-control-Module](https://github.com/yang-fu-physics/openlab-control-Module)。
+
+## 当前包含的驱动
+
+| 目录 ID | 适用设备 | 通讯方式 | 实机验证状态 |
+| --- | --- | --- | --- |
+| `lakeshore340` | Lake Shore Model 340 温控仪（支持 Temp A/B、Loop 1/2） | GPIB (VISA) | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
+| `zlan_6408_compressor` | ZLAN 6408I（4 路）/ 6842（8 路）压缩机继电器控制与 DI/DO 状态 | Modbus TCP | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
+| `cryocon_22c_24c` | Cryo-con 22C / 24C 温控仪（B 主控、A 监控、独立 PID 表） | VISA | **Beta（尚未接真机验证）** |
+| `example_controller` | 温场控制教学骨架（默认拒绝连接真机） | 无 | 仅作开发模板 |
+| `example_monitor` | 只读监控教学骨架（默认拒绝连接真机） | 无 | 仅作开发模板 |
+
+> 接入任何真实硬件前，请先阅读对应目录内的 `README.md` 与主框架的《真实仪表安全清单》。
+
+## 离线安装与配置（4 步）
+
+每个 `instruments/<仪表ID>/` 都是独立完整的安装包，按**一种物理型号/协议**组织（同一台设备的多路温度和加热状态共用一个实例和一条连接）：
+
+1. 核对目标目录的 `README.md`、`instrument.toml` 和代码。
+2. 将完整目录复制到主程序的 `OpenLabControl/system_instruments/<仪表ID>/`。
+3. 关闭主程序，运行 **Instrument Scanner**（发布包双击 `InstrumentScanner.exe`，源码版运行 `tools/instrument_scanner.py`）：
+   - **VISA Resources**：扫描确认 GPIB/USB/串口地址；
+   - **对应仪表页**：添加物理实例，选定 VISA 地址（或网口仪表的 `host` / `port`），核对型号参数、面板角色（`sample_temp` / `field` / `none`）和现场安全限值；
+   - **Review & Save**：排好面板顺序，检查完整预览后保存（不会覆盖或删除已有 `configs/pid/*.toml`）。
+4. 重启 OpenLab Control，在底部面板和 Run Log 中确认连接状态与读数。
+
+> 依赖说明：`PySide6`、`QtAwesome`、`packaging`、`PyVISA` 和 `typing_extensions` 均由主框架统一锁定提供，各驱动不重复安装依赖。
+
+## 驱动目录结构与 API v4 速览
 
 ```text
-instruments/<id>/
-├─ instrument.toml
-├─ backend.py
-├─ instrument.py          # 可选：底层命令和响应解析
-└─ *.example.toml         # 可选：首次配置时复制的现场模板
+instruments/<仪表ID>/
+├─ instrument.toml        # API v4 声明：字段、控制端点、固定面板、读数、无参数指令
+├─ backend.py             # 继承 SystemInstrument 的同步后台类
+├─ instrument.py          # 可选：底层 SCPI / Modbus 命令与解析
+├─ pid.example.toml       # 可选：首次配置时自动复制的现场 PID 模板
+└─ README.md              # 接线、参数与验证说明
 ```
 
-## 当前内容
-
-- `example_controller`：fail-closed 温度/磁场控制骨架，不含真实命令。
-- `example_monitor`：只读 Monitor 骨架，不含真实命令。
-- `cryocon_22c_24c`：Cryo-con 22C/24C 的 Beta 实现；使用一个 USB VISA 会话，以 B 为
-  主温度、A 为监视温度，并记录加热输出和量程。每个物理实例使用独立 PID 文件。
-- `lakeshore340`：Lake Shore 340 的 Beta 实现；使用 GPIB VISA，扫描器可为 controller
-  选择 Temp A 或 Temp B 作为主温度。已完成现场温控实机测试。
-- `zlan_6408_compressor`：ZLAN 6408I（四路）/ 6842（八路）的 Modbus TCP 压缩机控制；
-  开关步骤和延时由扫描器配置，显示并记录选定 DI/DO 位的与条件；提供
-  `Compressor On/Off` SEQ 指令。已完成现场压缩机控制实机测试。
-
-以上实机状态由现场于 2026-11-05 确认，仅覆盖实际测试的接线和配置。
-
-真实型号实现必须明确写出真机验证状态。示例骨架不能直接用于真实仪表。
-
-## 手动离线安装
-
-1. 审查目标目录、`instrument.toml` 和后台代码。
-2. 把完整目录复制到 `OpenLabControl/system_instruments/<instrument-id>/`。
-3. 运行 `tools/instrument_scanner.py`。第一页确认 VISA 资源；后续每页配置一种 System
-   Instrument；最后一页检查所有面板并调整全局顺序。
-4. 保存后，未分配给 System Instrument 的 VISA 地址写入
-   `configs/visa.resources.toml`，实例写入 `configs/instruments/<instrument-id>.toml`。
-   System Instrument 使用的 VISA 地址不会重复进入资源文件。ZLAN 等专用 TCP 仪表直接由
-   自己的 `config_fields` 提供 Host/Port，不参加通用 TCP 或 VISA 扫描。
-5. 重启 OpenLab Control，检查连接状态、前面板和 Run Log。
-
-保存会完整重写扫描器预览中的实例配置。每种 System Instrument 可以有多个物理实例；一个
-物理实例只创建一个后台进程和通讯会话，多个面板或控制端点都复用它。
-
-PySide6、QtAwesome、packaging、PyVISA 和 typing_extensions 使用主框架锁定版本，不在各
-System Instrument 中重复安装。需要新 Python 包时更新核心锁定依赖、完成全部测试并重新
-构建发布包。
-
-System Instrument API v4 不读取旧 `[panel]`、`[[panel.sections]]`、`[settings]`、
-`main_reading` 或 `main_readings`。清单用以下三个命名集合驱动扫描表单和运行时：
+`instrument.toml` 通过五组标准区块驱动扫描器表单与主程序运行：
 
 ```toml
 [[config_fields]]
@@ -73,38 +64,22 @@ reading_options = ["temp_a", "temp_b"]
 default_reading = "temp_a"
 ```
 
-`config_fields` 只声明型号专用输入；通用控制上下限、速率与稳定参数由 `controller` 面板
-给出初值，并由操作者在扫描器中确认。`controls` 是后端可控制端点。`panels` 的 `id` 是稳定
-短标识，实例配置只引用这个 ID，并保存 `enabled/order/role/reading` 和现场控制参数，不复制
-面板模板实现。`controller` 引用一个 control；`readout`/`readout_grid` 声明读数；`switch`
-声明状态读数和无参数命令。面板可关闭和全局排序，不能临时新增或删除模板。
+- **单一会话、多面板共享**：同一种型号可在扫描器中配置多个 `[[instances]]`（每台物理仪表一个子进程）；单台物理仪表上的多个面板（`controller` / `readout` / `readout_grid` / `switch`）共用同一个子进程和通讯会话。
+- **多回路支持**：只有一个已启用控制端点时，`read_status()` 可在顶层返回 `target/rate/moving/ready`；启用多个不同控制端点时按 `controls[control_id]` 分别返回。
 
-同一物理实例可以声明多个独立 control，仍只建立一个 worker 和通讯会话。只有一个不同的
-已启用 control 时，`read_status()` 可在顶层返回 `target/rate/moving/ready`；启用了多个
-不同 control 时，必须返回 `controls[control_id]`，让每个回路分别提供这四项。回路当前值
-仍来自其 Controller 面板选择的 `value` 或 `auxiliary` 读数。`set_target` 和 `hold` 必须按
-传入的 `control` 选择真实回路，并从对应面板配置复查该回路的现场安全限制。
+## 开发与安全守则
 
-## 编写原则
+- `__init__` 只保存配置，不发起通讯；
+- `open()` 用有限超时确认身份、单位与关键状态，**不自动改写设定或输出**；
+- `set_target(..., control=...)` 发送前复查对应端点的现场上下限，发送后尽量回读确认；
+- `hold(control=...)` 必须使用同一次操作里现读的新鲜值，绝不用旧缓存或 0；
+- 写命令超时视为结果不确定，绝不盲目重发；重连后先读回真实状态；
+- `close()` 必须幂等，能在部分初始化失败后安全释放资源。
 
-- `__init__` 只保存配置，不连接仪表。
-- `open()` 使用有限超时确认型号、固件、单位和关键状态，但不自动改变输出。
-- `read_status()` 返回普通字典；需要时用 `read_measurement()` 只读写测量行所需的即时主值。
-- `set_target(..., control=<id>)` 在发送前再次检查对应控制端点的现场目标与速率边界，并在
-  发送后回读确认。
-- `hold(control=<id>)` 使用同一次操作里的新鲜读数，不能使用缓存值、猜测值或零。
-- 写命令超时后不自动重发；重新连接后先读取实际状态。
-- `close()` 可重复调用，并能清理只完成一半的初始化。
-- 同一通讯口只由一个实例持有；地址读取 `config.address`。
-- 辅助温度和加热状态放在 `auxiliary` 字典中；名称、单位和精度只在清单声明一次。
-- 不同物理资源各有独立进程，连接和轮询会并发进行。
+## 运行测试
 
-## 测试
-
-```text
+```powershell
 <OpenLabControl>\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-真机前至少测试身份不符、损坏响应、I/O 超时、上下限边界、写后回读、写超时不重放、Hold
-新鲜读数、断线恢复、重复断开、部分初始化清理和进程退出。软件保护不能替代仪表本机限制、
-硬件联锁或人工急停。
+软件保护与自动化测试永远不能替代仪表本机限值、硬件联锁和人工急停。
