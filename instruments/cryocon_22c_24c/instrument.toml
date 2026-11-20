@@ -11,7 +11,7 @@ id = "io_timeout_seconds"
 label = "VISA I/O Timeout (s)"
 type = "number"
 default = 1.0
-min = 0.001
+min = 0.1
 
 [[config_fields]]
 id = "monitor_a_max_temperature"
