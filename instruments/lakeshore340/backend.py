@@ -118,6 +118,8 @@ class LakeShore340(SystemInstrument):
         self._resource = None
 
     def open(self) -> None:
+        if self._resource is not None:
+            return
         try:
             manager = pyvisa.ResourceManager()
         except pyvisa.errors.VisaIOError as exc:
@@ -136,12 +138,12 @@ class LakeShore340(SystemInstrument):
                 self.config.address,
             ) from exc
 
-        resource.timeout = self._visa_timeout_ms
-        resource.read_termination = "\r\n"
-        resource.write_termination = "\r\n"
         self._resource_manager = manager
         self._resource = resource
         try:
+            resource.timeout = self._visa_timeout_ms
+            resource.read_termination = "\r\n"
+            resource.write_termination = "\r\n"
             identity = self._query("*IDN?")
             identity_fields = [
                 field.strip().upper()
@@ -174,7 +176,7 @@ class LakeShore340(SystemInstrument):
                         "LAKESHORE340_LOOP_CONFIGURATION_MISMATCH",
                         str(loop),
                     )
-        except InstrumentError:
+        except Exception:
             self.close()
             raise
 
@@ -297,17 +299,49 @@ class LakeShore340(SystemInstrument):
 
     def hold(self, *, control: str) -> None:
         del control
-        temperatures = self._read_temperatures(
-            required_inputs={
-                self._loop_inputs[loop]
-                for loop in self._active_loops
-            }
-        )
+        temperatures, input_errors = self._read_temperatures_with_errors()
+        healthy_loops: list[tuple[int, float]] = []
+        failed_input: tuple[str, int, str] | None = None
         for loop in self._active_loops:
-            value = float(temperatures[self._loop_inputs[loop]])
+            input_name = self._loop_inputs[loop]
+            value = temperatures[input_name]
+            if value is None:
+                if failed_input is None and input_name in input_errors:
+                    status, active = input_errors[input_name]
+                    failed_input = (input_name, status, active)
+                continue
+            healthy_loops.append((loop, float(value)))
+        for loop, value in healthy_loops:
             self._write(f"SETP {loop},{round(value, 4 if value < 10 else 3):.9g}")
-        for loop in self._active_loops:
+        for loop, _value in healthy_loops:
             self._write(f"RAMP {loop},0")
+        if failed_input is not None:
+            input_name, status, active = failed_input
+            raise SafetyViolation(
+                f"Temp {input_name} reading status {status}: {active}",
+                "LAKESHORE340_INPUT_STATUS",
+                input_name,
+            )
+
+    def _read_temperatures_with_errors(
+        self,
+    ) -> tuple[dict[str, float | None], dict[str, tuple[int, str]]]:
+        temperatures: dict[str, float | None] = {}
+        errors: dict[str, tuple[int, str]] = {}
+        for input_name in ("A", "B"):
+            temperatures[input_name] = self._float_query(
+                f"KRDG? {input_name}"
+            )
+            status = self._integer_query(f"RDGST? {input_name}")
+            if status & ~_OLD_READING_STATUS:
+                temperatures[input_name] = None
+                active = ", ".join(
+                    label
+                    for bit, label in _INPUT_STATUS_FLAGS
+                    if status & bit
+                )
+                errors[input_name] = (status, active)
+        return temperatures, errors
 
     def _read_temperatures(
         self,
@@ -329,7 +363,7 @@ class LakeShore340(SystemInstrument):
                     for bit, label in _INPUT_STATUS_FLAGS
                     if status & bit
                 )
-                raise InstrumentError(
+                raise SafetyViolation(
                     f"Temp {input_name} reading status {status}: {active}",
                     "LAKESHORE340_INPUT_STATUS",
                     input_name,
