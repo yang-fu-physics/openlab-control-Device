@@ -375,5 +375,26 @@ class CryoconControllerTests(unittest.TestCase):
                 )
 
 
+    def test_accepts_non_usb_visa_addresses_and_trailing_semicolons(self) -> None:
+        config = _config()
+        config.address = "ASRL3::INSTR"
+        transport = FakeTransport(
+            status=_status() + ";",
+            measurement_temperature="6.875 K;",
+        )
+        controller = self._controller(transport, config=config)
+        controller.open()
+        reading = controller.read_status()
+        self.assertEqual(reading["value"], 4.2)
+        self.assertEqual(controller.read_measurement(), {"value": 6.875})
+
+    def test_hold_rate_above_max_rate_is_rejected_at_init(self) -> None:
+        config = _config()
+        config.extras["hold_rate_per_minute"] = 12.0
+        with self.assertRaises(SafetyViolation) as caught:
+            self._controller(FakeTransport(), config=config)
+        self.assertEqual(caught.exception.code, "CRYOCON_RATE_LIMIT")
+
+
 if __name__ == "__main__":
     unittest.main()

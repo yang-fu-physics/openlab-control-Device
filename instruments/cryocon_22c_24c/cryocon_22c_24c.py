@@ -32,6 +32,7 @@ class PyVisaTransport:
 
         timeout_ms = max(1, int(timeout_seconds * 1000.0))
         manager = pyvisa.ResourceManager()
+        resource = None
         try:
             resource = manager.open_resource(
                 address,
@@ -41,7 +42,11 @@ class PyVisaTransport:
             resource.read_termination = "\n"
             resource.write_termination = "\n"
         except Exception:
-            manager.close()
+            try:
+                if resource is not None:
+                    resource.close()
+            finally:
+                manager.close()
             raise
         self._manager = manager
         self._resource = resource
@@ -106,7 +111,7 @@ def read_status(transport: QueryTransport) -> ControllerReadback:
     """用一条复合查询读取 A、B 和 Loop 1，确保各值来自同一轮采样。"""
 
     response = transport.query(STATUS_QUERY)
-    parts = [part.strip() for part in response.split(";")]
+    parts = [part.strip() for part in response.strip().rstrip(";").split(";")]
     if len(parts) != 15:
         raise CryoconProtocolError(
             f"Status query returned {len(parts)} fields instead of 15: {response!r}"
@@ -136,7 +141,7 @@ def read_temperature_b(
     """Hold 前即时读取 B；不依赖前面板缓存，也不要求 A 当前正常。"""
 
     response = transport.query("INPUT B:TEMPERATURE?;UNITS?;ALARM?")
-    parts = [part.strip() for part in response.split(";")]
+    parts = [part.strip() for part in response.strip().rstrip(";").split(";")]
     if len(parts) != 3:
         raise CryoconProtocolError(
             f"Input B query returned {len(parts)} fields instead of 3: {response!r}"
@@ -183,7 +188,7 @@ def write_enum_and_readback(
     requested = str(value).strip().upper()
     response = transport.query(
         f"LOOP 1:{parameter} {requested};{parameter}?"
-    ).strip()
+    ).strip().rstrip(";").strip()
     if response.upper() != requested:
         raise CryoconProtocolError(
             f"{parameter} readback {response!r} does not match requested {requested!r}"
@@ -194,7 +199,7 @@ def write_enum_and_readback(
 def _number(value: Any, label: str) -> float:
     """严格解析有限数值，同时容许手册响应中的 K 和 % 后缀。"""
 
-    text = str(value).strip()
+    text = str(value).strip().rstrip(";").strip()
     if text.endswith(("K", "k", "%")):
         text = text[:-1].strip()
     try:

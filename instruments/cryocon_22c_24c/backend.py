@@ -50,12 +50,15 @@ class Cryocon22C24CController(SystemInstrument):
             config.extras["monitor_a_max_temperature"],
             "monitor_a_max_temperature",
         )
-        if not self._address.upper().startswith("USB"):
+        if not str(self._address).strip():
             raise ValueError(
-                "cryocon_22c_24c.address must be a USB VISA resource"
+                "cryocon_22c_24c.address must not be empty"
             )
         if self._monitor_max <= 0:
             raise ValueError("monitor_a_max_temperature must be positive")
+        self._hold_rate = self._bounded_rate(
+            config.extras["hold_rate_per_minute"]
+        )
         operation_timeout = self._positive_number(
             config.operation_timeout_seconds,
             "operation_timeout_seconds",
@@ -223,9 +226,7 @@ class Cryocon22C24CController(SystemInstrument):
         self._validate_channel("B", current, unit, alarm)
         target = self._bounded_target(current)
         # Hold 仍使用正速率；设定点等于当前值后仪表会停止继续爬升。
-        rate = self._bounded_rate(
-            float(self.config.extras["hold_rate_per_minute"])
-        )
+        rate = self._bounded_rate(self._hold_rate)
         self._apply_pid_and_target(target, rate)
 
     def _apply_pid_and_target(self, target: float, rate: float) -> None:
