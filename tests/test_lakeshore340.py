@@ -336,7 +336,7 @@ class LakeShore340Tests(unittest.TestCase):
         resource.responses["RDGST? A"] = "32"
         backend = _backend_class(FakeResourceManager(resource))(_config())
         backend.open()
-        with self.assertRaises(InstrumentError) as caught:
+        with self.assertRaises(SafetyViolation) as caught:
             backend.read_measurement()
         self.assertEqual(caught.exception.code, "LAKESHORE340_INPUT_STATUS")
         self.assertEqual(caught.exception.context, "A")
@@ -350,7 +350,7 @@ class LakeShore340Tests(unittest.TestCase):
             "LAKESHORE340_INVALID_CONFIGURATION",
         )
 
-    def test_hold_requires_the_active_loop_input_even_without_a_role(self) -> None:
+    def test_hold_holds_healthy_loops_before_raising_input_status_safety_error(self) -> None:
         resource = FakeResource()
         resource.responses["RDGST? A"] = "32"
         backend = _backend_class(FakeResourceManager(resource))(
@@ -358,10 +358,22 @@ class LakeShore340Tests(unittest.TestCase):
         )
         backend.open()
 
-        with self.assertRaises(InstrumentError) as caught:
+        with self.assertRaises(SafetyViolation) as caught:
             backend.hold(control="main")
         self.assertEqual(caught.exception.code, "LAKESHORE340_INPUT_STATUS")
-        self.assertEqual(resource.writes, [])
+        self.assertEqual(caught.exception.context, "A")
+        self.assertEqual(resource.writes, ["SETP 2,20.125", "RAMP 2,0"])
+
+        single_loop_resource = FakeResource()
+        single_loop_resource.responses["RDGST? A"] = "32"
+        single_loop_backend = _backend_class(
+            FakeResourceManager(single_loop_resource)
+        )(_config(loop2_enabled=False, role="none"))
+        single_loop_backend.open()
+        with self.assertRaises(SafetyViolation) as single_caught:
+            single_loop_backend.hold(control="main")
+        self.assertEqual(single_caught.exception.code, "LAKESHORE340_INPUT_STATUS")
+        self.assertEqual(single_loop_resource.writes, [])
 
     def test_manifest_declares_named_config_and_panel_templates(self) -> None:
         descriptor = load_instrument_manifest(INSTRUMENT)
