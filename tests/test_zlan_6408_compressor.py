@@ -315,29 +315,50 @@ class ZlanBackendTests(unittest.TestCase):
             ):
                 ZlanRelayController(_config(status_conditions=[channel]))
 
-    def test_unconfirmed_step_continues_on_fresh_connection_for_both_actions(self) -> None:
-        for enabled, command, channels in (
-            (True, "compressor_on", [7, 8]),
-            (False, "compressor_off", [8, 7]),
-        ):
-            with self.subTest(command=command):
-                first, second = FakeTransport(), FakeTransport()
-                connections = iter((first, second))
-                controller = ZlanRelayController(
-                    _config(output_count="8", on_channels=["DO7", "DO8"],
-                            off_channels=["DO8", "DO7"]),
-                    lambda *_: next(connections),
-                )
-                controller.open()
-                first.write_error = TimeoutError("no reply")
-                with self.assertRaisesRegex(
-                    InstrumentError, f"step 1 DO{channels[0]} unconfirmed",
-                ) as captured:
-                    controller.execute_sequence_command(command)
-                self.assertEqual(captured.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
-                self.assertEqual(first.writes, [(channels[0], enabled)])
-                self.assertTrue(first.closed)
-                self.assertEqual(second.writes, [(channels[1], enabled)])
+    def test_unconfirmed_step_stops_compressor_on_and_continues_compressor_off(self) -> None:
+        first_on, second_on = FakeTransport(), FakeTransport()
+        on_connections = iter((first_on, second_on))
+        controller_on = ZlanRelayController(
+            _config(output_count="8", on_channels=["DO7", "DO8"],
+                    off_channels=["DO8", "DO7"]),
+            lambda *_: next(on_connections),
+        )
+        controller_on.open()
+        first_on.write_error = TimeoutError("no reply")
+        with self.assertRaisesRegex(
+            InstrumentError, "step 1 DO7 unconfirmed",
+        ) as captured_on:
+            controller_on.execute_sequence_command("compressor_on")
+        self.assertEqual(captured_on.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
+        self.assertEqual(first_on.writes, [(7, True)])
+        self.assertTrue(first_on.closed)
+        self.assertEqual(second_on.writes, [])
+
+        first_off, second_off = FakeTransport(), FakeTransport()
+        off_connections = iter((first_off, second_off))
+        controller_off = ZlanRelayController(
+            _config(output_count="8", on_channels=["DO7", "DO8"],
+                    off_channels=["DO8", "DO7"]),
+            lambda *_: next(off_connections),
+        )
+        controller_off.open()
+        first_off.write_error = TimeoutError("no reply")
+        with self.assertRaisesRegex(
+            InstrumentError, "step 1 DO8 unconfirmed",
+        ) as captured_off:
+            controller_off.execute_sequence_command("compressor_off")
+        self.assertEqual(captured_off.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
+        self.assertEqual(first_off.writes, [(8, False)])
+        self.assertTrue(first_off.closed)
+        self.assertEqual(second_off.writes, [(7, False)])
+
+    def test_invalid_endpoint_delay_and_relay_channels_fail_at_init(self) -> None:
+        with self.assertRaises(ValueError):
+            ZlanRelayController(_config(host=""))
+        with self.assertRaises(ValueError):
+            ZlanRelayController(_config(step_delay_seconds=-0.1))
+        with self.assertRaises(ValueError):
+            ZlanRelayController(_config(output_count="4", on_channels=["DO5"]))
 
     def test_impossible_step_budget_is_rejected_before_open(self) -> None:
         with self.assertRaisesRegex(InstrumentError, "91 s; must be less than 30 s") as error:

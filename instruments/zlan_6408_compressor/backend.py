@@ -8,7 +8,7 @@ from time import sleep
 
 from labcontrol.instruments.base import InstrumentError, SystemInstrument
 
-from .zlan_6408 import ModbusTcpTransport, ZlanProtocolError
+from .zlan_6408 import ModbusTcpTransport, ZlanProtocolError, tcp_endpoint
 
 
 class ZlanRelayController(SystemInstrument):
@@ -23,20 +23,37 @@ class ZlanRelayController(SystemInstrument):
         ] = ModbusTcpTransport,
     ) -> None:
         super().__init__(config)
-        host = str(config.extras["host"])
+        host = str(config.extras["host"]).strip()
         if ":" in host and not host.startswith("["):
             host = f"[{host}]"
         self._address = f"tcp://{host}:{int(config.extras['port'])}"
+        tcp_endpoint(self._address)
         self._io_timeout = float(config.extras["io_timeout_seconds"])
         self._unit_id = int(config.extras["unit_id"])
         self._count = int(config.extras["output_count"])
+        if self._count not in {4, 8}:
+            raise ValueError("output_count must be 4 or 8")
         self._on = tuple(int(channel[2:]) for channel in config.extras["on_channels"])
         self._off = tuple(int(channel[2:]) for channel in config.extras["off_channels"])
+        if not self._on:
+            raise ValueError("on_channels must contain at least one channel")
+        if not self._off:
+            raise ValueError("off_channels must contain at least one channel")
+        for field_name, channels in (
+            ("on_channels", self._on),
+            ("off_channels", self._off),
+        ):
+            for number in channels:
+                if not 1 <= number <= self._count:
+                    raise ValueError(
+                        f"{field_name} channel DO{number} is outside the selected "
+                        f"{self._count}-channel ZLAN model"
+                    )
         self._status_inputs: list[int] = []
         self._status_outputs: list[int] = []
         for channel in config.extras["status_conditions"]:
             number = int(channel[2:])
-            if number > self._count:
+            if not 1 <= number <= self._count:
                 raise ValueError(
                     f"Status condition {channel} is outside the selected "
                     f"{self._count}-channel ZLAN model"
@@ -46,6 +63,8 @@ class ZlanRelayController(SystemInstrument):
         self._delay = float(config.extras["step_delay_seconds"])
         if not math.isfinite(self._io_timeout) or self._io_timeout <= 0.0:
             raise ValueError("io_timeout_seconds must be positive")
+        if not math.isfinite(self._delay) or self._delay < 0.0:
+            raise ValueError("step_delay_seconds must be non-negative")
         if not 1 <= self._unit_id <= 247:
             raise ValueError("unit_id must be from 1 to 247")
         # 首次使用已有连接；每个未确认的步骤可能使下一步需要新连接。
@@ -81,6 +100,8 @@ class ZlanRelayController(SystemInstrument):
         return self._transport_factory(self._address, self._io_timeout, self._unit_id)
 
     def open(self) -> None:
+        if self._transport is not None:
+            return
         try:
             self._transport = self._connect()
             self._read_state()
@@ -145,6 +166,8 @@ class ZlanRelayController(SystemInstrument):
                     self._transport = self._connect()
                 except OSError as exc:
                     failures.append(f"step {index + 1} DO{channel} not sent: {exc}")
+                    if enabled:
+                        break
                     continue
             try:
                 self._transport.write_output(channel, enabled)
@@ -152,6 +175,9 @@ class ZlanRelayController(SystemInstrument):
                 failures.append(f"step {index + 1} DO{channel} unconfirmed: {exc}")
                 # 迟到的回包不能用于下一步。丢弃连接，不重发本步。
                 self.close()
+                if enabled:
+                    # 启动序列属于前置依赖步骤，任一步未确认都立即中止，避免继续驱动后续继电器。
+                    break
         if failures:
             raise InstrumentError(
                 f"{command_id}: " + "; ".join(failures),

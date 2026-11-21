@@ -39,9 +39,11 @@ server port is 502. `unit_id` is the Modbus station address and defaults to 1. B
 use, turn off unsolicited reports and verify that writes return their echo.
 Check that no device-side hold timer or DI-to-DO mapping can override these actions.
 The fixed delay is applied between steps, never after the last step. If a write
-cannot be confirmed, its connection is closed and the next step uses a fresh one;
-the failed write is not retried or rolled back. After attempting the remaining
-steps, the action reports any unconfirmed steps as an error. A sequence whose
+cannot be confirmed, its connection is closed and the failed write is not retried
+or rolled back. For `compressor_on`, execution stops immediately after the first
+unconfirmed step so later startup relays are not energized when a prerequisite step
+failed. For `compressor_off`, remaining shutdown steps continue on a fresh
+connection as best effort, and any unconfirmed steps are reported as an error. A sequence whose
 I/O timeouts and delays do not fit the framework's operation budget is rejected
 before connecting with `INSTRUMENT_IO_TIMEOUT_TOO_HIGH`. Reduce the I/O timeout
 or step delay shown in the error; do not treat this as a network failure.
