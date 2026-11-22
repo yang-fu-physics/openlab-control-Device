@@ -38,6 +38,7 @@ class Cryocon22C24CController(SystemInstrument):
         self._transport_factory = transport_factory
         self._transport: instrument.QueryTransport | None = None
         self._status_validated = False
+        self._model = "24C"
         self._address = config.address
         primary_input = {"temp_a": "A", "temp_b": "B"}.get(config.main_reading)
         if primary_input is None:
@@ -79,11 +80,12 @@ class Cryocon22C24CController(SystemInstrument):
                 "INSTRUMENT_IO_TIMEOUT_TOO_HIGH",
                 "io_timeout_seconds",
             )
-        with Path(config.extras["pid_file"]).open("rb") as handle:
-            pid_config = tomllib.load(handle)
-        self._pid_zones = self._parse_pid_zones(
-            pid_config.get("zones"),
-            float(config.max_value),
+        self._max_value = float(config.max_value)
+        self._pid_file = Path(config.extras["pid_file"]).resolve()
+        self._pid_directory = self._pid_file.parent
+        self._pid_zones = self._load_pid_zones_from_path(
+            self._pid_file,
+            self._max_value,
         )
 
     def open(self) -> None:
@@ -102,7 +104,8 @@ class Cryocon22C24CController(SystemInstrument):
                 transport
             )
             maker = manufacturer.casefold().replace("-", "").replace(" ", "")
-            if "cryocon" not in maker or model.strip().upper() not in {
+            normalized_model = model.strip().upper()
+            if "cryocon" not in maker or normalized_model not in {
                 "22C",
                 "24C",
             }:
@@ -111,6 +114,7 @@ class Cryocon22C24CController(SystemInstrument):
                     "CRYOCON_IDENTITY_MISMATCH",
                     self._address,
                 )
+            self._model = normalized_model
             self._transport = transport
             # 首次状态检查也不得修改已经手动完成的仪表设置。
             self.read_status()
@@ -235,6 +239,232 @@ class Cryocon22C24CController(SystemInstrument):
         # Hold 仍使用正速率；设定点等于当前值后仪表会停止继续爬升。
         rate = self._bounded_rate(self._hold_rate)
         self._apply_pid_and_target(target, rate)
+
+    def execute_action(
+        self,
+        action: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """响应 Instrument Setup 按需查询或切换输入曲线与软件侧 PID 表。"""
+
+        if action == "read_setup":
+            return self._read_setup()
+        if action == "apply_setup":
+            return self._apply_setup(dict(payload or {}))
+        return super().execute_action(action, payload)
+
+    def _supported_channels(self) -> tuple[str, ...]:
+        return ("A", "B", "C", "D") if self._model == "24C" else ("A", "B")
+
+    def _read_channel_sensors(self) -> dict[str, dict[str, int | None]]:
+        transport = self._require_transport()
+        sensors: dict[str, dict[str, int | None]] = {}
+        try:
+            for channel in self._supported_channels():
+                factory_index, user_index = instrument.read_channel_sensor_indices(
+                    transport,
+                    channel,
+                )
+                sensors[channel] = {
+                    "factory_index": factory_index,
+                    "user_index": user_index,
+                }
+        except instrument.CryoconProtocolError as exc:
+            raise SafetyViolation(
+                str(exc),
+                "CRYOCON_INVALID_READBACK",
+                self._address,
+            ) from exc
+        except Exception as exc:
+            raise InstrumentError(
+                f"Cryo-con sensor curve query failed: {exc}",
+                "CRYOCON_COMMUNICATION_FAILED",
+                self._address,
+            ) from exc
+        return sensors
+
+    def _list_pid_tables(self) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        candidates: list[Path] = []
+        if self._pid_directory.is_dir():
+            candidates = sorted(
+                self._pid_directory.glob("*.toml"),
+                key=lambda item: item.name.casefold(),
+            )
+        if self._pid_file.is_file() and all(
+            item.resolve() != self._pid_file for item in candidates
+        ):
+            candidates.insert(0, self._pid_file)
+        for path in candidates:
+            resolved = path.resolve()
+            try:
+                zones = self._load_pid_zones_from_path(resolved, self._max_value)
+            except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+                entries.append(
+                    {
+                        "name": resolved.name,
+                        "path": str(resolved),
+                        "valid": False,
+                        "zone_count": 0,
+                        "max_temperature": None,
+                        "error": str(exc),
+                    }
+                )
+            else:
+                entries.append(
+                    {
+                        "name": resolved.name,
+                        "path": str(resolved),
+                        "valid": True,
+                        "zone_count": len(zones),
+                        "max_temperature": zones[-1].temperature,
+                        "error": "",
+                    }
+                )
+        return entries
+
+    def _read_setup(self) -> dict[str, Any]:
+        return {
+            "model": self._model,
+            "channels": list(self._supported_channels()),
+            "channel_sensors": self._read_channel_sensors(),
+            "current_pid_file": self._pid_file.name,
+            "current_pid_path": str(self._pid_file),
+            "pid_directory": str(self._pid_directory),
+            "pid_tables": self._list_pid_tables(),
+            "factory_index_max": 58,
+            "user_index_max": 7,
+        }
+
+    def _apply_setup(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        transport = self._require_transport()
+        supported = set(self._supported_channels())
+
+        raw_channels = payload.get("channels", {})
+        if not isinstance(raw_channels, Mapping):
+            raise InstrumentError(
+                "channels must be a mapping",
+                "CRYOCON_INVALID_SETUP",
+                self._address,
+            )
+        channel_updates: list[tuple[str, str, int]] = []
+        for raw_channel, raw_spec in raw_channels.items():
+            channel = str(raw_channel).strip().upper()
+            if channel not in supported:
+                raise InstrumentError(
+                    f"Channel {channel!r} is not supported on Cryo-con {self._model}",
+                    "CRYOCON_INVALID_SETUP",
+                    channel,
+                )
+            if not isinstance(raw_spec, Mapping):
+                raise InstrumentError(
+                    f"Channel {channel} sensor selection must be a mapping",
+                    "CRYOCON_INVALID_SETUP",
+                    channel,
+                )
+            kind = str(raw_spec.get("kind", "")).strip().casefold()
+            raw_index = raw_spec.get("index")
+            if kind not in {"factory", "user"}:
+                raise InstrumentError(
+                    f"Channel {channel} curve kind must be 'factory' or 'user'",
+                    "CRYOCON_INVALID_SETUP",
+                    channel,
+                )
+            if isinstance(raw_index, bool) or not isinstance(raw_index, int):
+                raise InstrumentError(
+                    f"Channel {channel} curve index must be an integer",
+                    "CRYOCON_INVALID_SETUP",
+                    channel,
+                )
+            max_index = 58 if kind == "factory" else 7
+            if not 0 <= raw_index <= max_index:
+                raise InstrumentError(
+                    f"Channel {channel} {kind} index {raw_index} must be between 0 and {max_index}",
+                    "CRYOCON_INVALID_SETUP",
+                    channel,
+                )
+            channel_updates.append((channel, kind, raw_index))
+
+        new_pid_file: Path | None = None
+        new_pid_zones: tuple[PIDZone, ...] | None = None
+        raw_pid_name = payload.get("pid_file")
+        if raw_pid_name is not None and str(raw_pid_name).strip():
+            requested_name = str(raw_pid_name).strip()
+            candidate_path = Path(requested_name)
+            if candidate_path.name != requested_name or candidate_path.suffix.casefold() != ".toml":
+                raise InstrumentError(
+                    f"PID table must be a .toml file name in {self._pid_directory}",
+                    "CRYOCON_INVALID_PID_FILE",
+                    requested_name,
+                )
+            resolved_candidate = (self._pid_directory / requested_name).resolve()
+            if resolved_candidate.parent != self._pid_directory.resolve() or not resolved_candidate.is_file():
+                raise InstrumentError(
+                    f"PID table file not found in {self._pid_directory}: {requested_name}",
+                    "CRYOCON_INVALID_PID_FILE",
+                    requested_name,
+                )
+            if resolved_candidate != self._pid_file:
+                try:
+                    new_pid_zones = self._load_pid_zones_from_path(
+                        resolved_candidate,
+                        self._max_value,
+                    )
+                except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+                    raise InstrumentError(
+                        f"Invalid PID table {requested_name}: {exc}",
+                        "CRYOCON_INVALID_PID_FILE",
+                        requested_name,
+                    ) from exc
+                new_pid_file = resolved_candidate
+
+        summary_parts: list[str] = []
+        for channel, kind, index in channel_updates:
+            try:
+                instrument.write_channel_sensor_index_and_readback(
+                    transport,
+                    channel,
+                    kind,
+                    index,
+                )
+            except Exception as exc:
+                raise InstrumentError(
+                    f"Cryo-con input {channel} curve write or readback confirmation failed: {exc}",
+                    "INSTRUMENT_WRITE_RESULT_UNKNOWN",
+                    f"{self._address}:{channel}",
+                ) from exc
+            label = f"USENix {index}" if kind == "user" else f"ISENix {index}"
+            summary_parts.append(f"CH {channel} -> {label}")
+
+        config_updates: dict[str, Any] = {}
+        if new_pid_file is not None and new_pid_zones is not None:
+            self._pid_file = new_pid_file
+            self._pid_zones = new_pid_zones
+            config_updates["pid_file"] = str(new_pid_file)
+            summary_parts.append(f"PID table -> {new_pid_file.name}")
+
+        setup = self._read_setup()
+        if config_updates:
+            setup["config_updates"] = config_updates
+        setup["summary"] = (
+            f"Cryo-con {self._model} updated: " + ", ".join(summary_parts)
+            if summary_parts
+            else f"Cryo-con {self._model}: no setup changes"
+        )
+        return setup
+
+    @classmethod
+    def _load_pid_zones_from_path(
+        cls,
+        path: Path,
+        configured_maximum: float,
+    ) -> tuple[PIDZone, ...]:
+        with path.open("rb") as handle:
+            pid_config = tomllib.load(handle)
+        return cls._parse_pid_zones(
+            pid_config.get("zones"),
+            configured_maximum,
+        )
 
     def _apply_pid_and_target(self, target: float, rate: float) -> None:
         transport = self._require_transport()

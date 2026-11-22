@@ -58,7 +58,16 @@ class FakeResource:
             "AOUT? 2": "-012.5",
             "SETP? 2": "+4.000000E+0",
             "RAMPST? 2": "1",
+            "INCRV? A": "01",
+            "INCRV? B": "21",
         }
+        self.curve_headers: dict[int, str] = {
+            1: "DT-470,STANDARD,2,325.0,1",
+            2: "DT-670,STANDARD,2,500.0,1",
+            21: "CX-1050-AA,X12345,4,325.0,1",
+            22: "RX-102A,R99999,4,040.0,1",
+        }
+        self.incrv_mismatch = False
         self.queries: list[str] = []
         self.writes: list[str] = []
         self.write_error = False
@@ -69,12 +78,18 @@ class FakeResource:
 
     def query(self, command: str) -> str:
         self.queries.append(command)
+        if command.startswith("CRVHDR? "):
+            number = int(command.split(" ", 1)[1])
+            return self.curve_headers.get(number, "               ,          ,0,+000.0,1")
         return self.responses[command]
 
     def write(self, command: str) -> None:
         self.writes.append(command)
         if self.write_error:
             raise FakeVisaIOError("write timeout")
+        if command.startswith("INCRV ") and not self.incrv_mismatch:
+            channel, curve = command[len("INCRV ") :].split(",", 1)
+            self.responses[f"INCRV? {channel.strip()}"] = curve.strip()
 
     def close(self) -> None:
         self.closed = True
@@ -378,6 +393,7 @@ class LakeShore340Tests(unittest.TestCase):
     def test_manifest_declares_named_config_and_panel_templates(self) -> None:
         descriptor = load_instrument_manifest(INSTRUMENT)
         self.assertTrue(descriptor.valid, descriptor.error)
+        self.assertEqual(descriptor.setup_widget, "frontend:SetupWidget")
 
         with (INSTRUMENT / "instrument.toml").open("rb") as handle:
             manifest = tomllib.load(handle)
@@ -395,6 +411,48 @@ class LakeShore340Tests(unittest.TestCase):
         self.assertEqual(controller["control"], "main")
         self.assertEqual(controller["reading_options"], ["temp_a", "temp_b"])
         self.assertEqual(controller["default_reading"], "temp_a")
+
+    def test_setup_reads_and_switches_channel_a_and_b_curves(self) -> None:
+        resource = FakeResource()
+        backend = _backend_class(FakeResourceManager(resource))(_config())
+        backend.open()
+
+        setup = backend.execute_action("read_setup")
+        self.assertEqual(setup["channels"], ["A", "B"])
+        self.assertEqual(setup["channel_curves"], {"A": 1, "B": 21})
+        numbers = [item["number"] for item in setup["curves"]]
+        self.assertEqual(numbers, [0, 1, 2, 21, 22])
+        self.assertEqual(setup["curves"][3]["label"], "21: CX-1050-AA (X12345)")
+
+        # Second read_setup uses cached CRVHDR? catalog unless refresh_curves=True.
+        resource.queries.clear()
+        backend.execute_action("read_setup")
+        self.assertEqual(resource.queries, ["INCRV? A", "INCRV? B"])
+        resource.queries.clear()
+        backend.execute_action("read_setup", {"refresh_curves": True})
+        self.assertIn("CRVHDR? 21", resource.queries)
+
+        # Apply switches both A and B and confirms via INCRV? readback.
+        resource.writes.clear()
+        updated = backend.execute_action("apply_setup", {"channels": {"A": 2, "B": 22}})
+        self.assertEqual(resource.writes, ["INCRV A,2", "INCRV B,22"])
+        self.assertEqual(updated["channel_curves"], {"A": 2, "B": 22})
+
+        # Invalid channel or out-of-range curve is rejected before any write.
+        resource.writes.clear()
+        with self.assertRaises(InstrumentError) as bad_ch:
+            backend.execute_action("apply_setup", {"channels": {"C": 1}})
+        self.assertEqual(bad_ch.exception.code, "LAKESHORE340_INVALID_SETUP")
+        with self.assertRaises(InstrumentError) as bad_num:
+            backend.execute_action("apply_setup", {"channels": {"A": 61}})
+        self.assertEqual(bad_num.exception.code, "LAKESHORE340_INVALID_SETUP")
+        self.assertEqual(resource.writes, [])
+
+        # Readback mismatch raises INSTRUMENT_WRITE_RESULT_UNKNOWN.
+        resource.incrv_mismatch = True
+        with self.assertRaises(InstrumentError) as mismatch:
+            backend.execute_action("apply_setup", {"channels": {"A": 1}})
+        self.assertEqual(mismatch.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
 
 
 if __name__ == "__main__":

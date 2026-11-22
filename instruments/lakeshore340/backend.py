@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import math
+from typing import Any
 
 import pyvisa
 
@@ -116,6 +118,7 @@ class LakeShore340(SystemInstrument):
         }
         self._resource_manager = None
         self._resource = None
+        self._cached_curves: list[dict[str, Any]] | None = None
 
     def open(self) -> None:
         if self._resource is not None:
@@ -183,6 +186,7 @@ class LakeShore340(SystemInstrument):
     def close(self) -> None:
         resource, self._resource = self._resource, None
         manager, self._resource_manager = self._resource_manager, None
+        self._cached_curves = None
         try:
             if resource is not None:
                 resource.close()
@@ -322,6 +326,158 @@ class LakeShore340(SystemInstrument):
                 "LAKESHORE340_INPUT_STATUS",
                 input_name,
             )
+
+    def execute_action(
+        self,
+        action: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """响应 Instrument Setup 按需查询和切换 A/B 通道传感器校准曲线。"""
+
+        if action == "read_setup":
+            data = dict(payload or {})
+            return self._read_setup(
+                refresh_curves=bool(data.get("refresh_curves", False))
+            )
+        if action == "apply_setup":
+            return self._apply_setup(dict(payload or {}))
+        return super().execute_action(action, payload)
+
+    def _read_channel_curves(self) -> dict[str, int]:
+        curves: dict[str, int] = {}
+        for channel in ("A", "B"):
+            curve_number = self._integer_query(f"INCRV? {channel}")
+            if not 0 <= curve_number <= 60:
+                raise InstrumentError(
+                    f"Invalid curve number for Input {channel}: {curve_number}",
+                    "LAKESHORE340_INVALID_RESPONSE",
+                    f"INCRV? {channel}",
+                )
+            curves[channel] = curve_number
+        return curves
+
+    def _read_curve_catalog(self, *, force: bool = False) -> list[dict[str, Any]]:
+        if self._cached_curves is not None and not force:
+            return [dict(item) for item in self._cached_curves]
+        catalog: list[dict[str, Any]] = [
+            {
+                "number": 0,
+                "name": "None",
+                "serial": "",
+                "kind": "none",
+                "label": "0: None",
+            }
+        ]
+        for number in range(1, 61):
+            raw = self._query(f"CRVHDR? {number}")
+            fields = [field.strip() for field in raw.split(",")]
+            if len(fields) < 3:
+                continue
+            name = fields[0]
+            serial = fields[1]
+            try:
+                fmt = int(fields[2])
+            except ValueError:
+                fmt = 0
+            if not name or (number >= 21 and fmt == 0 and not serial):
+                continue
+            kind = "standard" if number <= 20 else "user"
+            suffix = (
+                f" ({serial})"
+                if serial and serial.upper() not in {"NONE", "STANDARD"}
+                else ""
+            )
+            catalog.append(
+                {
+                    "number": number,
+                    "name": name,
+                    "serial": serial,
+                    "kind": kind,
+                    "label": f"{number}: {name}{suffix}",
+                }
+            )
+        self._cached_curves = catalog
+        return [dict(item) for item in catalog]
+
+    def _read_setup(self, *, refresh_curves: bool = False) -> dict[str, Any]:
+        channel_curves = self._read_channel_curves()
+        curves = self._read_curve_catalog(force=refresh_curves)
+        known = {item["number"] for item in curves}
+        for curve_number in sorted(set(channel_curves.values())):
+            if curve_number not in known:
+                curves.append(
+                    {
+                        "number": curve_number,
+                        "name": f"Curve {curve_number}",
+                        "serial": "",
+                        "kind": "user" if curve_number >= 21 else "standard",
+                        "label": f"{curve_number}: Curve {curve_number}",
+                    }
+                )
+                known.add(curve_number)
+        return {
+            "channels": ["A", "B"],
+            "channel_curves": channel_curves,
+            "curves": curves,
+        }
+
+    def _apply_setup(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw_channels = payload.get("channels", {})
+        if not isinstance(raw_channels, Mapping):
+            raise InstrumentError(
+                "channels must be a mapping",
+                "LAKESHORE340_INVALID_SETUP",
+                self.config.id,
+            )
+        updates: list[tuple[str, int]] = []
+        for raw_channel, raw_curve in raw_channels.items():
+            channel = str(raw_channel).strip().upper()
+            if channel not in {"A", "B"}:
+                raise InstrumentError(
+                    f"Unsupported Lake Shore 340 channel: {channel!r}",
+                    "LAKESHORE340_INVALID_SETUP",
+                    channel,
+                )
+            if isinstance(raw_curve, bool) or not isinstance(raw_curve, int):
+                raise InstrumentError(
+                    f"Input {channel} curve number must be an integer",
+                    "LAKESHORE340_INVALID_SETUP",
+                    channel,
+                )
+            if not 0 <= raw_curve <= 60:
+                raise InstrumentError(
+                    f"Input {channel} curve number {raw_curve} must be between 0 and 60",
+                    "LAKESHORE340_INVALID_SETUP",
+                    channel,
+                )
+            updates.append((channel, raw_curve))
+
+        summary_parts: list[str] = []
+        for channel, curve in updates:
+            self._write(f"INCRV {channel},{curve}")
+            try:
+                actual = self._integer_query(f"INCRV? {channel}")
+            except InstrumentError as exc:
+                raise InstrumentError(
+                    f"Input {channel} curve readback failed after write: {exc}",
+                    "INSTRUMENT_WRITE_RESULT_UNKNOWN",
+                    f"INCRV {channel}",
+                ) from exc
+            if actual != curve:
+                raise InstrumentError(
+                    f"Input {channel} curve readback {actual} does not match requested {curve}",
+                    "INSTRUMENT_WRITE_RESULT_UNKNOWN",
+                    f"INCRV {channel}",
+                )
+            summary_parts.append(f"CH {channel} -> Curve {curve}")
+
+        setup = self._read_setup(refresh_curves=False)
+        setup["summary"] = (
+            "Lake Shore 340 updated: " + ", ".join(summary_parts)
+            if summary_parts
+            else "Lake Shore 340: no setup changes"
+        )
+        return setup
 
     def _read_temperatures_with_errors(
         self,

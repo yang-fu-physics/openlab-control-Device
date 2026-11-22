@@ -41,6 +41,7 @@ d_gain = 1.0
 - A/B 传感器报警、Loop 1 加热故障、A 超过配置的 Temp A Maximum 均报错。
   Temp A Maximum 始终限制物理输入 A，与主温度选择无关；主温度为 A 时，设温、Hold 与状态校验中的目标均不得高于 Temp A Maximum。
 - 通信失联沿核心重连机制处理；恢复后核对实际目标和速率。
+- **传感器曲线与软件 PID 表切换（Instrument Setup）**：通过主菜单 **Instrument → Instrument Setup…**（或右键点击底部温控卡片）按需打开独立窗口，不占用额外底部卡片也不在后台轮询。22C 支持切换 A/B、24C 支持切换 A/B/C/D 通道的出厂曲线（`ISENix`）或用户曲线（`USENix`），每次写入均回读确认；同时支持在 `configs/pid/` 目录内校验并切换软件侧 PID 表（自动持久化回 `configs/instruments/`，在下一次 `Set Temperature` / `Hold` 生效，不中断当前控温）。
 
 请保留冷台现场 PID 文件和硬件独立过温保护。该模块不提供磁场，辅助温度不要再创建
 第二个连接到同一物理地址的仪表实例。

@@ -81,6 +81,12 @@ class FakeTransport:
         self.mismatch_parameter = mismatch_parameter
         self.commands: list[str] = []
         self.closed = False
+        self.channel_sensors: dict[str, tuple[int | None, int | None]] = {
+            "A": (1, None),
+            "B": (0, 2),
+            "C": (20, None),
+            "D": (0, 5),
+        }
 
     def query(self, command: str) -> str:
         self.commands.append(command)
@@ -96,6 +102,26 @@ class FakeTransport:
             return self.status.split(';')[0]
         if command == "INPUT? A;:INPUT A:UNITS?;ALARM?":
             return ';'.join(self.status.split(';')[:3])
+        if command.startswith("INPUT ") and command.endswith(":ISENIX?;USENIX?"):
+            channel = command[len("INPUT ") : command.index(":")]
+            factory_ix, user_ix = self.channel_sensors[channel]
+            f_text = "NONE" if factory_ix is None else str(factory_ix)
+            u_text = "NONE" if user_ix is None else str(user_ix)
+            return f"{f_text};{u_text}"
+        if command.startswith("INPUT ") and (
+            command.endswith(";ISENIX?") or command.endswith(";USENIX?")
+        ):
+            head, rest = command[len("INPUT ") :].split(":", 1)
+            key, tail = rest.split(" ", 1)
+            requested = int(tail.split(";", 1)[0])
+            if key == self.mismatch_parameter:
+                return str(requested + 1)
+            factory_ix, user_ix = self.channel_sensors[head]
+            if key == "ISENIX":
+                self.channel_sensors[head] = (requested, None)
+            else:
+                self.channel_sensors[head] = (None, requested)
+            return str(requested)
         operation = command.removeprefix("LOOP 1:")
         parameter = operation.split(" ", 1)[0]
         if ";" in command and command.endswith(f";{parameter}?"):
@@ -488,6 +514,94 @@ class CryoconControllerTests(unittest.TestCase):
         bad_reading.main_reading = "temp_c"
         with self.assertRaisesRegex(ValueError, "main_reading"):
             self._controller(FakeTransport(), config=bad_reading)
+
+    def test_setup_switches_curves_on_24c_and_22c_and_software_pid_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            pid_dir = Path(temp)
+            pid_a = pid_dir / "rod_a.toml"
+            pid_b = pid_dir / "rod_b.toml"
+            pid_bad = pid_dir / "empty.toml"
+            pid_a.write_text(
+                "[[zones]]\ntemperature = 400.0\np_gain = 10.0\ni_gain = 20.0\nd_gain = 1.0\nheater_range = 'LOW'\n",
+                encoding="utf-8",
+            )
+            pid_b.write_text(
+                "[[zones]]\ntemperature = 400.0\np_gain = 55.0\ni_gain = 12.0\nd_gain = 2.0\nheater_range = 'MID'\n",
+                encoding="utf-8",
+            )
+            pid_bad.write_text("zones = []\n", encoding="utf-8")
+
+            # Model 24C exposes A, B, C, D and switches both curves and software PID table.
+            transport_24c = FakeTransport(model="24C")
+            controller_24c = self._controller(transport_24c, config=_config(pid_file=pid_a))
+            controller_24c.open()
+
+            setup = controller_24c.execute_action("read_setup")
+            self.assertEqual(setup["model"], "24C")
+            self.assertEqual(setup["channels"], ["A", "B", "C", "D"])
+            self.assertEqual(setup["channel_sensors"]["C"]["factory_index"], 20)
+            self.assertEqual(setup["channel_sensors"]["D"]["user_index"], 5)
+            self.assertEqual(setup["current_pid_file"], "rod_a.toml")
+            by_name = {item["name"]: item for item in setup["pid_tables"]}
+            self.assertTrue(by_name["rod_a.toml"]["valid"])
+            self.assertTrue(by_name["rod_b.toml"]["valid"])
+            self.assertFalse(by_name["empty.toml"]["valid"])
+
+            applied = controller_24c.execute_action(
+                "apply_setup",
+                {
+                    "channels": {
+                        "A": {"kind": "factory", "index": 12},
+                        "C": {"kind": "user", "index": 3},
+                        "D": {"kind": "factory", "index": 0},
+                    },
+                    "pid_file": "rod_b.toml",
+                },
+            )
+            self.assertEqual(applied["channel_sensors"]["A"]["factory_index"], 12)
+            self.assertEqual(applied["channel_sensors"]["C"]["user_index"], 3)
+            self.assertEqual(applied["channel_sensors"]["D"]["factory_index"], 0)
+            self.assertEqual(applied["current_pid_file"], "rod_b.toml")
+            self.assertEqual(applied["config_updates"]["pid_file"], str(pid_b.resolve()))
+            self.assertIn("INPUT C:USENIX 3;USENIX?", transport_24c.commands)
+
+            # Next set_target uses the newly selected software PID table (p_gain=55, MID).
+            transport_24c.commands.clear()
+            controller_24c.set_target(100.0, 2.0, control="loop_1")
+            self.assertIn("LOOP 1:PGAIN 55;PGAIN?", transport_24c.commands)
+            self.assertIn("LOOP 1:RANGE MID;RANGE?", transport_24c.commands)
+
+            # Reject invalid/empty PID table and path traversal without mutating active table.
+            with self.assertRaises(InstrumentError) as bad_pid:
+                controller_24c.execute_action("apply_setup", {"pid_file": "empty.toml"})
+            self.assertEqual(bad_pid.exception.code, "CRYOCON_INVALID_PID_FILE")
+            with self.assertRaises(InstrumentError) as escape_pid:
+                controller_24c.execute_action("apply_setup", {"pid_file": "../rod_a.toml"})
+            self.assertEqual(escape_pid.exception.code, "CRYOCON_INVALID_PID_FILE")
+
+            # Readback mismatch raises INSTRUMENT_WRITE_RESULT_UNKNOWN.
+            mismatch_transport = FakeTransport(model="24C", mismatch_parameter="USENIX")
+            mismatch_controller = self._controller(mismatch_transport, config=_config(pid_file=pid_a))
+            mismatch_controller.open()
+            with self.assertRaises(InstrumentError) as mismatch:
+                mismatch_controller.execute_action(
+                    "apply_setup",
+                    {"channels": {"C": {"kind": "user", "index": 2}}},
+                )
+            self.assertEqual(mismatch.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
+
+            # Model 22C exposes only A and B and rejects C/D.
+            transport_22c = FakeTransport(model="22C")
+            controller_22c = self._controller(transport_22c, config=_config(pid_file=pid_a))
+            controller_22c.open()
+            setup_22c = controller_22c.execute_action("read_setup")
+            self.assertEqual(setup_22c["channels"], ["A", "B"])
+            with self.assertRaises(InstrumentError) as bad_ch:
+                controller_22c.execute_action(
+                    "apply_setup",
+                    {"channels": {"C": {"kind": "user", "index": 1}}},
+                )
+            self.assertEqual(bad_ch.exception.code, "CRYOCON_INVALID_SETUP")
 
 
 if __name__ == "__main__":

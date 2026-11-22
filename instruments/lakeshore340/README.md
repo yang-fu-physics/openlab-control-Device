@@ -53,3 +53,11 @@ Use a matching OpenLab Control build that supports the controller precision
 fields in this manifest; the already-published v0.20.5 build does not.
 OpenLab rejects excess digits before writing; it does not round user-entered
 setpoints or ramps. Hold Current uses the nearest supported setpoint.
+
+## Sensor Calibration Curves (Instrument Setup)
+
+Open **Instrument → Instrument Setup…** (or right-click any Lake Shore 340 panel)
+to view and switch Input A / Input B sensor curves on demand without polling
+curves during normal monitoring. The setup dialog queries `CRVHDR?` and
+`INCRV? A/B` when opened or refreshed, writes changed assignments via `INCRV`,
+and confirms each channel with an `INCRV?` readback while the SEQ is idle.
