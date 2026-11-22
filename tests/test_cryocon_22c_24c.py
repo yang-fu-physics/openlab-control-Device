@@ -449,6 +449,25 @@ class CryoconControllerTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "CRYOCON_TARGET_LIMIT")
         self.assertEqual(transport.commands, [])
 
+        # Hold must also reject a fresh Temp A reading above Temp A Maximum without writing SETPT.
+        transport.status = _status(
+            temperature_a="321", temperature_b="297.25", setpoint="300", source="CHA", ramping="NO"
+        )
+        transport.commands.clear()
+        with self.assertRaises(SafetyViolation) as hold_caught:
+            controller.hold(control="loop_1")
+        self.assertEqual(hold_caught.exception.code, "CRYOCON_TARGET_LIMIT")
+        self.assertEqual(transport.commands, ["INPUT? A;:INPUT A:UNITS?;ALARM?"])
+
+        # Status validation rejects a controller setpoint above Temp A Maximum when CH A is primary.
+        bad_setpoint_transport = FakeTransport(
+            status=_status(temperature_a="300", temperature_b="297.25", setpoint="350", source="CHA", ramping="NO")
+        )
+        bad_controller = self._controller(bad_setpoint_transport, config=config)
+        with self.assertRaises(SafetyViolation) as status_caught:
+            bad_controller.open()
+        self.assertEqual(status_caught.exception.code, "CRYOCON_TARGET_LIMIT")
+
         # Primary B is independent of Temp A max so 350 K target remains allowed.
         b_transport = FakeTransport()
         b_controller = self._controller(b_transport)

@@ -208,12 +208,6 @@ class Cryocon22C24CController(SystemInstrument):
 
         del mode, control
         target = self._bounded_target(value)
-        if self._primary_input == "A" and target > self._monitor_max:
-            raise SafetyViolation(
-                f"Target {target:g} K exceeds Temp A Maximum ({self._monitor_max:g} K)",
-                "CRYOCON_TARGET_LIMIT",
-                self.config.id,
-            )
         rate = self._bounded_rate(rate_per_minute)
         self._apply_pid_and_target(target, rate)
 
@@ -376,6 +370,12 @@ class Cryocon22C24CController(SystemInstrument):
             raise SafetyViolation(
                 f"Target {target:g} K is outside the configured "
                 f"{self.config.min_value:g}–{self.config.max_value:g} K range",
+                "CRYOCON_TARGET_LIMIT",
+                self.config.id,
+            )
+        if self._primary_input == "A" and target > self._monitor_max:
+            raise SafetyViolation(
+                f"Target {target:g} K exceeds Temp A Maximum ({self._monitor_max:g} K)",
                 "CRYOCON_TARGET_LIMIT",
                 self.config.id,
             )
