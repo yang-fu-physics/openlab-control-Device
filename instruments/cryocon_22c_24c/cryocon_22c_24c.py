@@ -27,7 +27,7 @@ class QueryTransport(Protocol):
 class PyVisaTransport:
     """具有有限 I/O 超时并使用 LF 终止符的 PyVISA 会话。"""
 
-    def __init__(self, address: str, timeout_seconds: float) -> None:
+    def __init__(self, address: str, timeout_seconds: float, *, baud_rate: int = 9600) -> None:
         import pyvisa
 
         timeout_ms = max(1, int(timeout_seconds * 1000.0))
@@ -41,6 +41,11 @@ class PyVisaTransport:
             resource.timeout = timeout_ms
             resource.read_termination = "\n"
             resource.write_termination = "\n"
+            if address.strip().upper().startswith("ASRL"):
+                resource.baud_rate = baud_rate
+                resource.data_bits = 8
+                resource.parity = pyvisa.constants.Parity.none
+                resource.stop_bits = pyvisa.constants.StopBits.one
         except Exception:
             try:
                 if resource is not None:
@@ -87,13 +92,13 @@ class ControllerReadback:
 
 
 STATUS_QUERY = (
-    "INPUT A:TEMPERATURE?;UNITS?;ALARM?;"
-    ":INPUT B:TEMPERATURE?;UNITS?;ALARM?;"
+    "INPUT? A;:INPUT A:UNITS?;ALARM?;"
+    ":INPUT? B;:INPUT B:UNITS?;ALARM?;"
     ":LOOP 1:SETPT?;RATE?;RAMP?;RANGE?;HTRREAD?;ERROR?;TYPE?;SOURCE?;"
     ":CONTROL?"
 )
 
-MEASUREMENT_TEMPERATURE_QUERY = "INPUT B:TEMPERATURE?"
+MEASUREMENT_TEMPERATURE_QUERY = "INPUT? B"
 
 
 def identify(transport: QueryTransport) -> tuple[str, str, str, str]:
@@ -135,26 +140,26 @@ def read_status(transport: QueryTransport) -> ControllerReadback:
     )
 
 
-def read_temperature_b(
-    transport: QueryTransport,
+def read_temperature(
+    transport: QueryTransport, channel: str,
 ) -> tuple[float, str, str]:
-    """Hold 前即时读取 B；不依赖前面板缓存，也不要求 A 当前正常。"""
+    """Hold 前即时读取所选输入，不依赖前面板缓存。"""
 
-    response = transport.query("INPUT B:TEMPERATURE?;UNITS?;ALARM?")
+    response = transport.query(f"INPUT? {channel};:INPUT {channel}:UNITS?;ALARM?")
     parts = [part.strip() for part in response.strip().rstrip(";").split(";")]
     if len(parts) != 3:
         raise CryoconProtocolError(
-            f"Input B query returned {len(parts)} fields instead of 3: {response!r}"
+            f"Input {channel} query returned {len(parts)} fields instead of 3: {response!r}"
         )
-    return _number(parts[0], "input B temperature"), parts[1], parts[2]
+    return _number(parts[0], f"input {channel} temperature"), parts[1], parts[2]
 
 
-def read_measurement_temperature_b(transport: QueryTransport) -> float:
-    """只读取写实验数据所需的 B 温度，不附带状态或其他通道查询。"""
+def read_measurement_temperature(transport: QueryTransport, channel: str) -> float:
+    """只读取写实验数据所需的主温度，不附带状态或其他通道查询。"""
 
     return _number(
-        transport.query(MEASUREMENT_TEMPERATURE_QUERY),
-        "input B measurement temperature",
+        transport.query(f"INPUT? {channel}"),
+        f"input {channel} measurement temperature",
     )
 
 

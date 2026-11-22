@@ -90,8 +90,12 @@ class FakeTransport:
             return self.status
         if command == MEASUREMENT_TEMPERATURE_QUERY:
             return self.measurement_temperature
-        if command == "INPUT B:TEMPERATURE?;UNITS?;ALARM?":
+        if command == "INPUT? B;:INPUT B:UNITS?;ALARM?":
             return "5.5;K;--"
+        if command == "INPUT? A":
+            return self.status.split(';')[0]
+        if command == "INPUT? A;:INPUT A:UNITS?;ALARM?":
+            return ';'.join(self.status.split(';')[:3])
         operation = command.removeprefix("LOOP 1:")
         parameter = operation.split(" ", 1)[0]
         if ";" in command and command.endswith(f";{parameter}?"):
@@ -132,6 +136,32 @@ def _config(*, pid_file: Path = PID_FIXTURE, auxiliary_readings=None):
 
 
 class CryoconControllerTests(unittest.TestCase):
+    def test_a_controls_loop1_b_is_auxiliary_and_firmware_no_is_ready(self):
+        transport = FakeTransport(status=_status(temperature_a="300", temperature_b="297.25", setpoint="300", source="CHA", ramping="NO"))
+        config = _config(auxiliary_readings=["temp_b", "heater_output", "heater_range"])
+        config.main_reading = "temp_a"
+        config.address = "ASRL4::INSTR"
+        config.extras['baud_rate'] = '9600'
+        controller = self._controller(transport, config=config)
+        controller.open()
+        status = controller.read_status()
+        self.assertEqual(status['value'], 300)
+        self.assertEqual(status['auxiliary']['temp_b'], 297.25)
+        self.assertTrue(status['ready'])
+        transport.commands.clear()
+        self.assertEqual(controller.read_measurement()['value'], 300)
+        self.assertEqual(transport.commands, ['INPUT? A'])
+        controller.hold(control='loop_1')
+        self.assertIn('INPUT? A;:INPUT A:UNITS?;ALARM?', transport.commands)
+        self.assertEqual(transport.commands[-1], 'LOOP 1:SETPT 300;SETPT?')
+        self.assertFalse(any('LOOP 2' in command for command in transport.commands))
+        controller.close()
+
+    def test_site_pid_derivative_is_preserved_without_ratio_clamping(self):
+        zones = Cryocon22C24CController._parse_pid_zones([{'temperature': 500, 'p_gain': 40, 'i_gain': 30, 'd_gain': 30}], 400)
+        self.assertEqual(zones[0].i_gain, 30)
+        self.assertEqual(zones[0].d_gain, 30)
+
     def _controller(
         self,
         transport: FakeTransport,
@@ -140,7 +170,7 @@ class CryoconControllerTests(unittest.TestCase):
     ) -> Cryocon22C24CController:
         return Cryocon22C24CController(
             _config() if config is None else config,
-            transport_factory=lambda _address, _timeout: transport,
+            transport_factory=lambda _address, _timeout, **_options: transport,
         )
 
     def test_connect_is_read_only_and_accepts_22c_or_24c(self) -> None:
@@ -263,7 +293,7 @@ class CryoconControllerTests(unittest.TestCase):
 
         self.assertEqual(
             transport.commands[0],
-            "INPUT B:TEMPERATURE?;UNITS?;ALARM?",
+            "INPUT? B;:INPUT B:UNITS?;ALARM?",
         )
         self.assertEqual(transport.commands[-1], "LOOP 1:SETPT 5.5;SETPT?")
         self.assertFalse(
@@ -394,6 +424,70 @@ class CryoconControllerTests(unittest.TestCase):
         with self.assertRaises(SafetyViolation) as caught:
             self._controller(FakeTransport(), config=config)
         self.assertEqual(caught.exception.code, "CRYOCON_RATE_LIMIT")
+
+    def test_monitor_panel_keeps_both_channels_for_a_or_b_primary(self) -> None:
+        manifest_path = ROOT / "instruments" / "cryocon_22c_24c" / "instrument.toml"
+        with manifest_path.open("rb") as handle:
+            manifest = tomllib.load(handle)
+        monitor = next(panel for panel in manifest["panels"] if panel["id"] == "monitor")
+        self.assertEqual(
+            monitor["readings"],
+            ["temp_a", "temp_b", "heater_output", "heater_range"],
+        )
+
+    def test_primary_a_target_above_monitor_a_max_is_rejected_before_write(self) -> None:
+        transport = FakeTransport(
+            status=_status(temperature_a="300", temperature_b="297.25", setpoint="300", source="CHA", ramping="NO")
+        )
+        config = _config(auxiliary_readings=["temp_b", "heater_output", "heater_range"])
+        config.main_reading = "temp_a"
+        controller = self._controller(transport, config=config)
+        controller.open()
+        transport.commands.clear()
+        with self.assertRaises(SafetyViolation) as caught:
+            controller.set_target(350.0, 1.0, control="loop_1")
+        self.assertEqual(caught.exception.code, "CRYOCON_TARGET_LIMIT")
+        self.assertEqual(transport.commands, [])
+
+        # Hold must also reject a fresh Temp A reading above Temp A Maximum without writing SETPT.
+        transport.status = _status(
+            temperature_a="321", temperature_b="297.25", setpoint="300", source="CHA", ramping="NO"
+        )
+        transport.commands.clear()
+        with self.assertRaises(SafetyViolation) as hold_caught:
+            controller.hold(control="loop_1")
+        self.assertEqual(hold_caught.exception.code, "CRYOCON_TARGET_LIMIT")
+        self.assertEqual(transport.commands, ["INPUT? A;:INPUT A:UNITS?;ALARM?"])
+
+        # Status validation rejects a controller setpoint above Temp A Maximum when CH A is primary.
+        bad_setpoint_transport = FakeTransport(
+            status=_status(temperature_a="300", temperature_b="297.25", setpoint="350", source="CHA", ramping="NO")
+        )
+        bad_controller = self._controller(bad_setpoint_transport, config=config)
+        with self.assertRaises(SafetyViolation) as status_caught:
+            bad_controller.open()
+        self.assertEqual(status_caught.exception.code, "CRYOCON_TARGET_LIMIT")
+
+        # Primary B is independent of Temp A max so 350 K target remains allowed.
+        b_transport = FakeTransport()
+        b_controller = self._controller(b_transport)
+        b_controller.open()
+        b_transport.commands.clear()
+        b_controller.set_target(350.0, 1.0, control="loop_1")
+        self.assertEqual(b_transport.commands[-1], "LOOP 1:SETPT 350;SETPT?")
+
+    def test_invalid_baud_rate_or_main_reading_raises_value_error(self) -> None:
+        for bad_baud in (9600.5, True, "4800", "abc"):
+            with self.subTest(baud_rate=bad_baud):
+                config = _config()
+                config.extras["baud_rate"] = bad_baud
+                with self.assertRaisesRegex(ValueError, "baud rate"):
+                    self._controller(FakeTransport(), config=config)
+
+        bad_reading = _config()
+        bad_reading.main_reading = "temp_c"
+        with self.assertRaisesRegex(ValueError, "main_reading"):
+            self._controller(FakeTransport(), config=bad_reading)
 
 
 if __name__ == "__main__":

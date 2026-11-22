@@ -1,21 +1,20 @@
 # Cryo-con 22C / 24C
 
-本 System Instrument 只创建一个 `temperature` 仪表和一个 VISA 会话（支持 USB 虚拟串口 `ASRL*::INSTR`、USB、LAN/TCP 或 GPIB 资源）：B 是主温度，A 作为同一
-快照内的 `2nd Stage` 只读附加值。它不提供磁场。由独立回读电路得到的实际加热输出
-（`HTRREAD?`，单位为满量程百分比 `%FS`）和加热量程也随完整快照写入
-`instrument_status.dat`。实验测量行只发送 `INPUT B:TEMPERATURE?`；A、加热输出和量程的
-固定列在该行留空，不把上次监视读数伪装成同步测量值。
+一个物理实例共用一个 VISA 会话，只控制 Loop 1。主温度可选 Temp A 或 Temp B；
+默认 CH A 为主温度，CH B 为只读辅助温度。不查询或写入 Loop 2。
+
+USB 虚拟串口使用 `ASRL…::INSTR` 地址，8N1、LF 终止符，波特率必须与面板一致，
+可选 9600、19200、38400、57600、115200；同时保留 USB、LAN/TCP 和 GPIB VISA 地址支持。
+若面板波特率不是默认 9600，Instrument Scanner 自动扫描可能无法识别，可手动填写 `ASRL` 地址并在配置中选择对应波特率。
 
 ## 配置
 
-把完整目录复制到核心仓库的 `system_instruments/cryocon_22c_24c/`，然后运行 Instrument
-Scanner。选择对应 VISA 资源后，扫描器创建一个 Sample Temperature controller 和一个
-Temperature and Heater 监视面板；两者共用同一个物理实例和 VISA 会话。
+把完整目录放入 System Instruments 目录，在 Instrument Scanner 中选择资源、
+波特率、Loop 1 主温度和监视读数。只有 Loop 1 已使用所选输入、处于 RAMPP 且
+CONTROL ON 时才允许控制；连接只读验证，不自动切换输入或开启加热。
 
-每个物理实例使用自己的 `configs/pid/<instance-id>.toml`。首次保存该实例时，扫描器把
-`pid.example.toml` 复制到这个位置；以后再次保存或移除实例都不会覆盖或删除 PID 文件。
-内置示例故意只有 `zones = []`，不能直接运行。必须填写该冷却系统已经在现场验证过的 PID
-数值：
+每个物理实例使用自己的 `configs/pid/<instance-id>.toml`。
+`pid.example.toml` 是空模板，必须填入现场已经确认的参数，不能用测试夹具代替。
 
 ```toml
 [[zones]]
@@ -23,34 +22,25 @@ temperature = 10.0 # 严格上边界
 p_gain = 1.0
 i_gain = 4.0
 d_gain = 1.0
-heater_range = "LOW" # 可省略；省略时保留当前量程
-
-[[zones]]
-temperature = 400.0
-p_gain = 2.0
-i_gain = 8.0
-d_gain = 2.0
-heater_range = "MID"
+# heater_range = "LOW" # 可选：LOW/MID/HI；不填写则保留仪表当前量程
 ```
 
-温度边界必须严格递增，最后一行必须覆盖 controller 的最大温度；P/I/D 必须在 0–1000，
-D 不得超过 I/4，量程只能是 LOW/MID/HI。文件缺失、TOML 损坏、空 zones 或任一安全条件
-不满足时，后台在连接仪表前快速失败。TempB 是 controller 的固定主读数；TempA、加热输出
-和量程由同一次读取返回，不另开第二个 USB 会话。
+温度边界必须严格递增，最后一行覆盖 controller 最大温度。P/I/D 必须为有限值且
+在远程命令的 0–1000 范围内。手册建议 D 不超过 I/4；软件保留现场确认的原值，
+不再以这个比例拒绝或钳位参数。空表、非法数值或非法量程仍快速失败。
 
-## 运行规则
+## 读写与运行
 
-- Enable/启动只读身份和状态，不自动写入保存的设置。
-- 仅接受 Cryo-con 22C 或 24C、Loop 1、输入 B、`RAMPP`、控制已开启、A/B 单位 K。
-- 每次设温依次写入并回读 P、I、D、可选量程、速率、目标温度；任一回读不一致立即
-  报 Error，不自动重发。
-- 写测量数据时只读取 TempB；完整控制轮询仍读取 A/B 报警、Loop 1、加热输出和量程。
-- A 或 B 的传感器报警、Loop 1 加热故障、A 高于 320 K 都是立即中止 SEQ 的安全错误。
-- 普通通讯失联由核心尝试重连 60 秒；恢复时核对仪表实际目标和速率。
-- Stop、退出和断开只关闭 VISA 会话或把目标保持在即时 B 读数，不关闭加热输出。
+- 完整状态用复合查询读取 A/B、Loop 1、控制状态、加热回读和量程；使用固件支持的
+  `INPUT? A/B` 温度查询，斜坡状态支持 ON/OFF 和 YES/NO。
+- 实验测量行只查询所选主温度。辅助温度和加热读数在该行留空，不使用缓存冒充同步值；
+  完整状态仍写入 `instrument_status.dat`。
+- Set Temperature 按目标温度选择 PID 段，逐项写入并回读 P、I、D、可选量程、速率，
+  最后写入并回读目标。任一不匹配即报错，不自动重发。
+- Hold 用即时主温度作为目标，不关闭加热。断开和退出只关闭 VISA 会话。
+- A/B 传感器报警、Loop 1 加热故障、A 超过配置的 Temp A Maximum 均报错。
+  Temp A Maximum 始终限制物理输入 A，与主温度选择无关；主温度为 A 时，设温、Hold 与状态校验中的目标均不得高于 Temp A Maximum。
+- 通信失联沿核心重连机制处理；恢复后核对实际目标和速率。
 
-首次连接真实仪表前，请先用伪负载或安全温区核对 PID 区间、USB VISA 地址、B 输入和
-Loop 1 的 `RAMPP` 状态，并保留硬件独立的过温保护。
-
-默认仿真配置中的独立 `field` 和 `second_stage` 仪表块应从现场配置删除：此接线没有磁场
-仪表，A 已经由本 System Instrument 通过同一个 USB 会话显示和记录，不能再为 A 打开第二个仪表连接。
+请保留冷台现场 PID 文件和硬件独立过温保护。该模块不提供磁场，辅助温度不要再创建
+第二个连接到同一物理地址的仪表实例。
