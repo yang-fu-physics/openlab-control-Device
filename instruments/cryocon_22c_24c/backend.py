@@ -26,21 +26,21 @@ class PIDZone:
 
 
 class Cryocon22C24CController(SystemInstrument):
-    """以 B 为主温度、A 为只读二级冷头温度的单连接控制器。"""
+    """Loop 1 控制所选主温度，A/B 共享同一个通信会话。"""
 
     def __init__(
         self,
         config,
         *,
-        transport_factory: Callable[
-            [str, float], instrument.QueryTransport
-        ] = instrument.PyVisaTransport,
+        transport_factory: Callable[..., instrument.QueryTransport] = instrument.PyVisaTransport,
     ) -> None:
         super().__init__(config)
         self._transport_factory = transport_factory
         self._transport: instrument.QueryTransport | None = None
         self._status_validated = False
         self._address = config.address
+        self._primary_input = {"temp_a": "A", "temp_b": "B"}[config.main_reading]
+        self._baud_rate = int(config.extras.get("baud_rate", 9600))
         self._auxiliary_readings = frozenset(config.auxiliary_readings)
         self._io_timeout = self._positive_number(
             config.extras["io_timeout_seconds"],
@@ -54,6 +54,8 @@ class Cryocon22C24CController(SystemInstrument):
             raise ValueError(
                 "cryocon_22c_24c.address must not be empty"
             )
+        if self._baud_rate not in (9600, 19200, 38400, 57600, 115200):
+            raise ValueError("Unsupported Cryo-con serial baud rate")
         if self._monitor_max <= 0:
             raise ValueError("monitor_a_max_temperature must be positive")
         self._hold_rate = self._bounded_rate(
@@ -91,6 +93,7 @@ class Cryocon22C24CController(SystemInstrument):
             transport = self._transport_factory(
                 self._address,
                 self._io_timeout,
+                baud_rate=self._baud_rate,
             )
             manufacturer, model, _serial, _firmware = instrument.identify(
                 transport
@@ -123,7 +126,7 @@ class Cryocon22C24CController(SystemInstrument):
             transport.close()
 
     def read_status(self) -> dict[str, object]:
-        """即时读取 B 主温度，以及 A、加热输出和量程附加读数。"""
+        """读取所选主温度，以及 A/B、加热输出和量程附加读数。"""
 
         transport = self._require_transport()
         try:
@@ -141,15 +144,16 @@ class Cryocon22C24CController(SystemInstrument):
                 self._address,
             ) from exc
         self._validate_status(status)
-        ramping = status.ramping.strip().upper() == "ON"
+        ramping = status.ramping.strip().upper() in {"ON", "YES"}
         auxiliary = {
             "temp_a": status.temperature_a,
+            "temp_b": status.temperature_b,
             "heater_output": status.heater_output_percent,
             "heater_range": status.heater_range.strip().upper(),
         }
         self._status_validated = True
         return {
-            "value": status.temperature_b,
+            "value": status.temperature_a if self._primary_input == "A" else status.temperature_b,
             "target": status.setpoint,
             "rate": status.rate,
             "moving": ramping,
@@ -162,7 +166,7 @@ class Cryocon22C24CController(SystemInstrument):
         }
 
     def read_measurement(self) -> dict[str, object]:
-        """测量行只向仪表查询 TempB，其余状态留给常规安全轮询。"""
+        """测量行只查询所选主温度，其余状态留给常规安全轮询。"""
 
         transport = self._require_transport()
         if not self._status_validated:
@@ -172,8 +176,8 @@ class Cryocon22C24CController(SystemInstrument):
                 self._address,
             )
         try:
-            temperature_b = instrument.read_measurement_temperature_b(
-                transport
+            temperature = instrument.read_measurement_temperature(
+                transport, self._primary_input
             )
         except instrument.CryoconProtocolError as exc:
             raise SafetyViolation(
@@ -187,7 +191,7 @@ class Cryocon22C24CController(SystemInstrument):
                 "CRYOCON_COMMUNICATION_FAILED",
                 self._address,
             ) from exc
-        return {"value": temperature_b}
+        return {"value": temperature}
 
     def set_target(
         self,
@@ -205,12 +209,12 @@ class Cryocon22C24CController(SystemInstrument):
         self._apply_pid_and_target(target, rate)
 
     def hold(self, *, control: str) -> None:
-        """以即时 B 读数作为目标；保持输出开启和 Ramp-P 控制。"""
+        """以即时主温度读数作为目标；保持输出开启和 Ramp-P 控制。"""
 
         del control
         transport = self._require_transport()
         try:
-            current, unit, alarm = instrument.read_temperature_b(transport)
+            current, unit, alarm = instrument.read_temperature(transport, self._primary_input)
         except instrument.CryoconProtocolError as exc:
             raise SafetyViolation(
                 str(exc),
@@ -223,7 +227,7 @@ class Cryocon22C24CController(SystemInstrument):
                 "INSTRUMENT_WRITE_RESULT_UNKNOWN",
                 self._address,
             ) from exc
-        self._validate_channel("B", current, unit, alarm)
+        self._validate_channel(self._primary_input, current, unit, alarm)
         target = self._bounded_target(current)
         # Hold 仍使用正速率；设定点等于当前值后仪表会停止继续爬升。
         rate = self._bounded_rate(self._hold_rate)
@@ -291,9 +295,9 @@ class Cryocon22C24CController(SystemInstrument):
                 "CRYOCON_INPUT_A_HIGH_LIMIT",
                 "A",
             )
-        if status.loop_source.strip().upper() not in {"B", "CHB"}:
+        if status.loop_source.strip().upper() not in {self._primary_input, f"CH{self._primary_input}"}:
             self._configuration_fault(
-                f"Loop 1 source is {status.loop_source!r}, expected input B"
+                f"Loop 1 source is {status.loop_source!r}, expected input {self._primary_input}"
             )
         if status.loop_type.strip().upper() != "RAMPP":
             self._configuration_fault(
@@ -301,7 +305,7 @@ class Cryocon22C24CController(SystemInstrument):
             )
         if status.control.strip().upper() != "ON":
             self._configuration_fault("Controller reports CONTROL OFF")
-        if status.ramping.strip().upper() not in {"ON", "OFF"}:
+        if status.ramping.strip().upper() not in {"ON", "OFF", "YES", "NO"}:
             self._configuration_fault(
                 f"Invalid Loop 1 ramp state {status.ramping!r}"
             )
@@ -428,10 +432,6 @@ class Cryocon22C24CController(SystemInstrument):
                 d_gain,
             ) > 1000.0:
                 raise ValueError("PID gains must be within the instrument 0–1000 range")
-            if d_gain > i_gain / 4.0:
-                raise ValueError(
-                    f"zones[{index}].d_gain must not exceed i_gain / 4"
-                )
             raw_range = raw_zone.get("heater_range")
             heater_range = (
                 None

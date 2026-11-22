@@ -90,8 +90,12 @@ class FakeTransport:
             return self.status
         if command == MEASUREMENT_TEMPERATURE_QUERY:
             return self.measurement_temperature
-        if command == "INPUT B:TEMPERATURE?;UNITS?;ALARM?":
+        if command == "INPUT B:TEMP?;UNITS?;ALARM?":
             return "5.5;K;--"
+        if command == "INPUT? A":
+            return self.status.split(';')[0]
+        if command == "INPUT A:TEMP?;UNITS?;ALARM?":
+            return ';'.join(self.status.split(';')[:3])
         operation = command.removeprefix("LOOP 1:")
         parameter = operation.split(" ", 1)[0]
         if ";" in command and command.endswith(f";{parameter}?"):
@@ -132,6 +136,32 @@ def _config(*, pid_file: Path = PID_FIXTURE, auxiliary_readings=None):
 
 
 class CryoconControllerTests(unittest.TestCase):
+    def test_a_controls_loop1_b_is_auxiliary_and_firmware_no_is_ready(self):
+        transport = FakeTransport(status=_status(temperature_a="300", temperature_b="297.25", setpoint="300", source="CHA", ramping="NO"))
+        config = _config(auxiliary_readings=["temp_b", "heater_output", "heater_range"])
+        config.main_reading = "temp_a"
+        config.address = "ASRL4::INSTR"
+        config.extras['baud_rate'] = '9600'
+        controller = self._controller(transport, config=config)
+        controller.open()
+        status = controller.read_status()
+        self.assertEqual(status['value'], 300)
+        self.assertEqual(status['auxiliary']['temp_b'], 297.25)
+        self.assertTrue(status['ready'])
+        transport.commands.clear()
+        self.assertEqual(controller.read_measurement()['value'], 300)
+        self.assertEqual(transport.commands, ['INPUT? A'])
+        controller.hold(control='loop_1')
+        self.assertIn('INPUT A:TEMP?;UNITS?;ALARM?', transport.commands)
+        self.assertEqual(transport.commands[-1], 'LOOP 1:SETPT 300;SETPT?')
+        self.assertFalse(any('LOOP 2' in command for command in transport.commands))
+        controller.close()
+
+    def test_site_pid_derivative_is_preserved_without_ratio_clamping(self):
+        zones = Cryocon22C24CController._parse_pid_zones([{'temperature': 500, 'p_gain': 40, 'i_gain': 30, 'd_gain': 30}], 400)
+        self.assertEqual(zones[0].i_gain, 30)
+        self.assertEqual(zones[0].d_gain, 30)
+
     def _controller(
         self,
         transport: FakeTransport,
@@ -140,7 +170,7 @@ class CryoconControllerTests(unittest.TestCase):
     ) -> Cryocon22C24CController:
         return Cryocon22C24CController(
             _config() if config is None else config,
-            transport_factory=lambda _address, _timeout: transport,
+            transport_factory=lambda _address, _timeout, **_options: transport,
         )
 
     def test_connect_is_read_only_and_accepts_22c_or_24c(self) -> None:
@@ -263,7 +293,7 @@ class CryoconControllerTests(unittest.TestCase):
 
         self.assertEqual(
             transport.commands[0],
-            "INPUT B:TEMPERATURE?;UNITS?;ALARM?",
+            "INPUT B:TEMP?;UNITS?;ALARM?",
         )
         self.assertEqual(transport.commands[-1], "LOOP 1:SETPT 5.5;SETPT?")
         self.assertFalse(

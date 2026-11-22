@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | `lakeshore340` | Lake Shore Model 340 温控仪（支持 Temp A/B、Loop 1/2） | GPIB (VISA) | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
 | `zlan_6408_compressor` | ZLAN 6408I（4 路）/ 6842（8 路）压缩机继电器控制与 DI/DO 状态 | Modbus TCP | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
-| `cryocon_22c_24c` | Cryo-con 22C / 24C 温控仪（B 主控、A 监控、独立 PID 表） | VISA | **Beta（尚未接真机验证）** |
+| `cryocon_22c_24c` | Cryo-con 22C / 24C 温控仪（Loop 1 主温度可选 A/B，默认 A 主控、B 监控，独立 PID 表） | VISA（含 USB 虚拟串口） | **22C 现场读写与升温响应验证（2026-11-22）**；24C 未验证 |
 | `example_controller` | 温场控制教学骨架（默认拒绝连接真机） | 无 | 仅作开发模板 |
 | `example_monitor` | 只读监控教学骨架（默认拒绝连接真机） | 无 | 仅作开发模板 |
 
