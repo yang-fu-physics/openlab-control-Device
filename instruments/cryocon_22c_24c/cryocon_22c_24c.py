@@ -41,7 +41,7 @@ class PyVisaTransport:
             resource.timeout = timeout_ms
             resource.read_termination = "\n"
             resource.write_termination = "\n"
-            if address.upper().startswith("ASRL"):
+            if address.strip().upper().startswith("ASRL"):
                 resource.baud_rate = baud_rate
                 resource.data_bits = 8
                 resource.parity = pyvisa.constants.Parity.none
@@ -145,7 +145,7 @@ def read_temperature(
 ) -> tuple[float, str, str]:
     """Hold 前即时读取所选输入，不依赖前面板缓存。"""
 
-    response = transport.query(f"INPUT {channel}:TEMP?;UNITS?;ALARM?")
+    response = transport.query(f"INPUT? {channel};:INPUT {channel}:UNITS?;ALARM?")
     parts = [part.strip() for part in response.strip().rstrip(";").split(";")]
     if len(parts) != 3:
         raise CryoconProtocolError(

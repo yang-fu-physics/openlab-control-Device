@@ -39,8 +39,13 @@ class Cryocon22C24CController(SystemInstrument):
         self._transport: instrument.QueryTransport | None = None
         self._status_validated = False
         self._address = config.address
-        self._primary_input = {"temp_a": "A", "temp_b": "B"}[config.main_reading]
-        self._baud_rate = int(config.extras.get("baud_rate", 9600))
+        primary_input = {"temp_a": "A", "temp_b": "B"}.get(config.main_reading)
+        if primary_input is None:
+            raise ValueError(
+                f"Unsupported Cryo-con main_reading {config.main_reading!r}"
+            )
+        self._primary_input = primary_input
+        self._baud_rate = self._parse_baud_rate(config.extras.get("baud_rate", 9600))
         self._auxiliary_readings = frozenset(config.auxiliary_readings)
         self._io_timeout = self._positive_number(
             config.extras["io_timeout_seconds"],
@@ -54,8 +59,6 @@ class Cryocon22C24CController(SystemInstrument):
             raise ValueError(
                 "cryocon_22c_24c.address must not be empty"
             )
-        if self._baud_rate not in (9600, 19200, 38400, 57600, 115200):
-            raise ValueError("Unsupported Cryo-con serial baud rate")
         if self._monitor_max <= 0:
             raise ValueError("monitor_a_max_temperature must be positive")
         self._hold_rate = self._bounded_rate(
@@ -205,6 +208,12 @@ class Cryocon22C24CController(SystemInstrument):
 
         del mode, control
         target = self._bounded_target(value)
+        if self._primary_input == "A" and target > self._monitor_max:
+            raise SafetyViolation(
+                f"Target {target:g} K exceeds Temp A Maximum ({self._monitor_max:g} K)",
+                "CRYOCON_TARGET_LIMIT",
+                self.config.id,
+            )
         rate = self._bounded_rate(rate_per_minute)
         self._apply_pid_and_target(target, rate)
 
@@ -457,6 +466,20 @@ class Cryocon22C24CController(SystemInstrument):
                 "The final PID temperature must cover the configured maximum temperature"
             )
         return tuple(zones)
+
+    @staticmethod
+    def _parse_baud_rate(value: Any) -> int:
+        if isinstance(value, bool):
+            raise ValueError("Unsupported Cryo-con serial baud rate")
+        if isinstance(value, int):
+            baud = value
+        elif isinstance(value, str) and value.strip().isdigit():
+            baud = int(value.strip())
+        else:
+            raise ValueError("Unsupported Cryo-con serial baud rate")
+        if baud not in (9600, 19200, 38400, 57600, 115200):
+            raise ValueError("Unsupported Cryo-con serial baud rate")
+        return baud
 
     @staticmethod
     def _finite_number(value: Any, label: str) -> float:

@@ -65,7 +65,7 @@ stability_window_seconds = 30.0
 id = "monitor"
 label = "Temperature and Heater"
 template = "readout_grid"
-readings = ["temp_b", "heater_output", "heater_range"]
+readings = ["temp_a", "temp_b", "heater_output", "heater_range"]
 
 [discovery]
 identity_pattern = "(?i)cryo-?con.*(?:22c|24c)"
