@@ -87,6 +87,7 @@ class Cryocon22C24CController(SystemInstrument):
             self._pid_file,
             self._max_value,
         )
+        self._staged_pid: tuple[Path, tuple[PIDZone, ...]] | None = None
 
     def open(self) -> None:
         """建立 VISA 会话并只读验证型号、传感器和 Loop 1 状态。"""
@@ -129,6 +130,7 @@ class Cryocon22C24CController(SystemInstrument):
 
         transport, self._transport = self._transport, None
         self._status_validated = False
+        self._staged_pid = None
         if transport is not None:
             transport.close()
 
@@ -339,6 +341,7 @@ class Cryocon22C24CController(SystemInstrument):
     def _apply_setup(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         transport = self._require_transport()
         supported = set(self._supported_channels())
+        self._staged_pid = None
 
         raw_channels = payload.get("channels", {})
         if not isinstance(raw_channels, Mapping):
@@ -438,8 +441,9 @@ class Cryocon22C24CController(SystemInstrument):
 
         config_updates: dict[str, Any] = {}
         if new_pid_file is not None and new_pid_zones is not None:
-            self._pid_file = new_pid_file
-            self._pid_zones = new_pid_zones
+            # 仅暂存校验好的 PID 表，待核心把 configs/instruments/*.toml 原子落盘后
+            # 再通过 apply_config_updates() 生效，避免落盘失败时内存与磁盘配置漂移。
+            self._staged_pid = (new_pid_file, new_pid_zones)
             config_updates["pid_file"] = str(new_pid_file)
             summary_parts.append(f"PID table -> {new_pid_file.name}")
 
@@ -452,6 +456,45 @@ class Cryocon22C24CController(SystemInstrument):
             else f"Cryo-con {self._model}: no setup changes"
         )
         return setup
+
+    def apply_config_updates(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """在核心将配置原子写回磁盘后激活新的软件侧 PID 表。"""
+
+        raw_pid = updates.get("pid_file")
+        if raw_pid is not None and str(raw_pid).strip():
+            target = Path(str(raw_pid)).resolve()
+            if (
+                target.parent != self._pid_directory.resolve()
+                or target.suffix.casefold() != ".toml"
+                or not target.is_file()
+            ):
+                raise InstrumentError(
+                    f"PID table file not found in {self._pid_directory}: {raw_pid}",
+                    "CRYOCON_INVALID_PID_FILE",
+                    str(raw_pid),
+                )
+            if self._staged_pid is not None and self._staged_pid[0] == target:
+                zones = self._staged_pid[1]
+            else:
+                try:
+                    zones = self._load_pid_zones_from_path(
+                        target,
+                        self._max_value,
+                    )
+                except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+                    raise InstrumentError(
+                        f"Invalid PID table {target.name}: {exc}",
+                        "CRYOCON_INVALID_PID_FILE",
+                        target.name,
+                    ) from exc
+            self._pid_file = target
+            self._pid_zones = zones
+            self._staged_pid = None
+            self.config.extras["pid_file"] = str(target)
+        return {
+            "current_pid_file": self._pid_file.name,
+            "current_pid_path": str(self._pid_file),
+        }
 
     @classmethod
     def _load_pid_zones_from_path(

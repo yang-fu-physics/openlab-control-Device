@@ -561,11 +561,34 @@ class CryoconControllerTests(unittest.TestCase):
             self.assertEqual(applied["channel_sensors"]["A"]["factory_index"], 12)
             self.assertEqual(applied["channel_sensors"]["C"]["user_index"], 3)
             self.assertEqual(applied["channel_sensors"]["D"]["factory_index"], 0)
-            self.assertEqual(applied["current_pid_file"], "rod_b.toml")
             self.assertEqual(applied["config_updates"]["pid_file"], str(pid_b.resolve()))
             self.assertIn("INPUT C:USENIX 3;USENIX?", transport_24c.commands)
 
-            # Next set_target uses the newly selected software PID table (p_gain=55, MID).
+            # Before core confirms disk persistence via apply_config_updates(), the active
+            # PID table must remain rod_a.toml (zero drift if disk save fails), and retrying
+            # Apply must still emit config_updates instead of reporting "no setup changes".
+            self.assertEqual(applied["current_pid_file"], "rod_a.toml")
+            self.assertEqual(
+                controller_24c.execute_action("read_setup")["current_pid_file"],
+                "rod_a.toml",
+            )
+            transport_24c.commands.clear()
+            controller_24c.set_target(100.0, 2.0, control="loop_1")
+            self.assertIn("LOOP 1:PGAIN 10;PGAIN?", transport_24c.commands)
+            self.assertIn("LOOP 1:RANGE LOW;RANGE?", transport_24c.commands)
+
+            retried = controller_24c.execute_action("apply_setup", {"pid_file": "rod_b.toml"})
+            self.assertEqual(retried["config_updates"]["pid_file"], str(pid_b.resolve()))
+            self.assertIn("PID table -> rod_b.toml", retried["summary"])
+
+            # Once core persists configs/instruments/*.toml and invokes apply_config_updates(),
+            # the new PID table activates and takes effect on the next set_target().
+            committed = controller_24c.apply_config_updates(retried["config_updates"])
+            self.assertEqual(committed["current_pid_file"], "rod_b.toml")
+            self.assertEqual(
+                controller_24c.execute_action("read_setup")["current_pid_file"],
+                "rod_b.toml",
+            )
             transport_24c.commands.clear()
             controller_24c.set_target(100.0, 2.0, control="loop_1")
             self.assertIn("LOOP 1:PGAIN 55;PGAIN?", transport_24c.commands)
