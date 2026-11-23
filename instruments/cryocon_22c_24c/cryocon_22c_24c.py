@@ -201,6 +201,62 @@ def write_enum_and_readback(
     return response
 
 
+def _optional_index(value: Any, label: str) -> int | None:
+    text = str(value).strip().rstrip(";").strip()
+    if not text or text.upper() in {"NONE", "--", "OFF", "N/A"}:
+        return None
+    try:
+        parsed = int(text)
+    except ValueError as exc:
+        raise CryoconProtocolError(f"Invalid {label}: {value!r}") from exc
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def read_channel_sensor_indices(
+    transport: QueryTransport,
+    channel: str,
+) -> tuple[int | None, int | None]:
+    """查询指定输入通道的出厂传感器索引 (ISENix) 与用户曲线索引 (USENix)。"""
+
+    ch = str(channel).strip().upper()
+    response = transport.query(f"INPUT {ch}:ISENIX?;USENIX?")
+    parts = [part.strip() for part in response.strip().rstrip(";").split(";")]
+    if len(parts) != 2:
+        raise CryoconProtocolError(
+            f"Input {ch} sensor index query returned {len(parts)} fields instead of 2: {response!r}"
+        )
+    factory_index = _optional_index(parts[0], f"input {ch} factory sensor index")
+    user_index = _optional_index(parts[1], f"input {ch} user curve index")
+    return factory_index, user_index
+
+
+def write_channel_sensor_index_and_readback(
+    transport: QueryTransport,
+    channel: str,
+    kind: str,
+    index: int,
+) -> int:
+    """为指定输入通道写入出厂曲线 (ISENix) 或用户曲线 (USENix) 并立即回读确认。"""
+
+    ch = str(channel).strip().upper()
+    command_key = {"factory": "ISENIX", "user": "USENIX"}.get(kind)
+    if command_key is None:
+        raise ValueError(f"Unsupported sensor curve kind: {kind!r}")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise ValueError(f"Sensor index must be a non-negative integer: {index!r}")
+    response = transport.query(
+        f"INPUT {ch}:{command_key} {index};{command_key}?"
+    ).strip().rstrip(";").strip()
+    actual = _optional_index(response, f"input {ch} {command_key} readback")
+    if actual != index:
+        raise CryoconProtocolError(
+            f"Input {ch} {command_key} readback {response!r} does not match requested {index}"
+        )
+    return actual
+
+
 def _number(value: Any, label: str) -> float:
     """严格解析有限数值，同时容许手册响应中的 K 和 % 后缀。"""
 
