@@ -8,19 +8,15 @@
 
 | 目录 ID | 适用设备 | 通讯方式 | 实机验证状态 |
 | --- | --- | --- | --- |
-| `lakeshore340` | Lake Shore Model 340 温控仪（支持 Temp A/B、Loop 1/2） | GPIB (VISA) | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
+| `lakeshore340` | Lake Shore Model 340 温控仪（`0.2.2.dev1`；Temp A/B、Loop 1/2、**Instrument Setup** 按需切换传感器曲线） | GPIB (VISA) | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
 | `zlan_6408_compressor` | ZLAN 6408I（4 路）/ 6842（8 路）压缩机继电器控制与 DI/DO 状态 | Modbus TCP | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
-| `cryocon_22c_24c` | Cryo-con 22C / 24C 温控仪（Loop 1 主温度可选 A/B，默认 A 主控、B 监控，独立 PID 表） | VISA（含 USB 虚拟串口） | **22C 现场读写与升温响应验证（2026-11-22）**；24C 未验证 |
+| `cryocon_22c_24c` | Cryo-con 22C / 24C 温控仪（`0.3.1.dev2`；Loop 1 主控可选 A/B，含边界 `<=` 独立 PID 表、**Instrument Setup** 按需切换曲线与软件 PID 表） | VISA（含 USB 虚拟串口） | **22C 现场读写与升温响应验证（2026-11-22）**；24C 未验证 |
 | `example_controller` | 温场控制教学骨架（默认拒绝连接真机） | 无 | 仅作开发模板 |
 | `example_monitor` | 只读监控教学骨架（默认拒绝连接真机） | 无 | 仅作开发模板 |
 
-> 接入任何真实硬件前，请先阅读对应目录内的 `README.md` 与主框架的《真实仪表安全清单》。
+> 接入任何真实硬件前，请先阅读对应目录内的 `README.md` 与主框架的《真实仪表安全清单》。Cryo-con `0.3.1.dev2` 按包含等于（`<=`）的温度上限选择 PID，并附带可选参考文件 [`pid.operator-example.toml`](instruments/cryocon_22c_24c/pid.operator-example.toml)（非通用默认整定值，须核对冷台适用性后显式选用）。
 
 ## 离线安装与配置（4 步）
-
-Cryo-con `0.3.1.dev2` 按包含边界的温度上限选择 PID，例如目标恰好 8 K 使用 8 K 行。
-可选的 [`pid.operator-example.toml`](instruments/cryocon_22c_24c/pid.operator-example.toml)
-保存操作者提供的温区参数及低温调整，需核对适用性后显式选择；它不是通用默认整定值。
 
 每个 `instruments/<仪表ID>/` 都是独立完整的安装包，按**一种物理型号/协议**组织（同一台设备的多路温度和加热状态共用一个实例和一条连接）：
 
@@ -38,10 +34,11 @@ Cryo-con `0.3.1.dev2` 按包含边界的温度上限选择 PID，例如目标恰
 
 ```text
 instruments/<仪表ID>/
-├─ instrument.toml        # API v4 声明：字段、控制端点、固定面板、读数、无参数指令
+├─ instrument.toml        # API v4 声明：字段、控制端点、固定面板、读数、指令与可选 setup_widget
 ├─ backend.py             # 继承 SystemInstrument 的同步后台类
 ├─ instrument.py          # 可选：底层 SCPI / Modbus 命令与解析
-├─ pid.example.toml       # 可选：首次配置时自动复制的现场 PID 模板
+├─ frontend.py            # 可选：Instrument Setup 按需配置界面（如曲线 / 软件 PID 表切换）
+├─ pid.example.toml       # 可选：首次配置时自动复制的现场 PID 空模板（非默认参考表须显式选用）
 └─ README.md              # 接线、参数与验证说明
 ```
 

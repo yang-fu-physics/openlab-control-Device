@@ -2,7 +2,7 @@
 # list with the PID zones already validated for that cryostat.
 zones = []
 
-# Each zone uses a inclusive upper temperature boundary. The final boundary must
+# Each zone uses an inclusive upper temperature boundary. The final boundary must
 # cover the controller panel's configured maximum temperature.
 #
 # [[zones]]

@@ -1,7 +1,7 @@
 # Operator-provided cryostat example; not universal tuning or a default table.
 # Select explicitly only after checking suitability for the connected cryostat.
 # Converted from the operator-provided table; low-temperature PID updated 2026-11-24.
-# The all-zero final row is retained in pid-original.ini, excluded here.
+# The original controller export's trailing all-zero row is excluded here.
 # Operator confirmed row 7 has I=30 and D=30.
 # No heater ranges were supplied. Existing instrument range is preserved.
 # Temperature is an inclusive upper boundary.
