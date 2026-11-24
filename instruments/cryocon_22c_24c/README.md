@@ -1,5 +1,8 @@
 # Cryo-con 22C / 24C
 
+- **驱动版本**：`0.3.1.dev2`
+- **实机验证状态**：Cryo-con `22C` 已完成现场读写与升温响应验证（`2026-11-22`，仅覆盖已测接线与配置）；`24C` 尚未实机验证。
+
 一个物理实例共用一个 VISA 会话，只控制 Loop 1。主温度可选 Temp A 或 Temp B；
 默认 CH A 为主温度，CH B 为只读辅助温度。不查询或写入 Loop 2。
 
@@ -18,16 +21,26 @@ CONTROL ON 时才允许控制；连接只读验证，不自动切换输入或开
 
 ```toml
 [[zones]]
-temperature = 10.0 # 严格上边界
+temperature = 10.0 # 包含等于的温区上限
 p_gain = 1.0
 i_gain = 4.0
 d_gain = 1.0
 # heater_range = "LOW" # 可选：LOW/MID/HI；不填写则保留仪表当前量程
 ```
 
+选取第一行满足目标温度 <= temperature 的 PID；例如恰好 3 K 使用 3 K 行，恰好 8 K 使用 8 K 行。
 温度边界必须严格递增，最后一行覆盖 controller 最大温度。P/I/D 必须为有限值且
 在远程命令的 0–1000 范围内。手册建议 D 不超过 I/4；软件保留现场确认的原值，
 不再以这个比例拒绝或钳位参数。空表、非法数值或非法量程仍快速失败。
+
+### 可选现场参考表（`pid.operator-example.toml`）
+
+目录内额外附带的 `pid.operator-example.toml` 保留了操作者提供的特定冷台参数（含 `100 K` 行的 `I=30 / D=30`）及低温段调整：`T <= 8 K` 使用 `P=0.1 / I=0.5 / D=0`，`8 < T <= 10 K` 使用 `P=0.1 / I=1 / D=0`，其余高温段保持原值；全表省略 `heater_range`（写温时保留仪表当前加热量程），温区上限覆盖至 `500 K`（实际允许目标仍受配置的 controller 上限约束，主温度为 A 时同时不得高于 `Temp A Maximum`）。
+
+该文件仅针对特定冷台，**不是通用默认整定表**；空模板 `pid.example.toml` 仍是默认入口，核对适用性后须显式选用：
+
+- **首次或重新配置**：在 **Instrument Scanner** 中点击 **Choose PID File…** 选中 `pid.operator-example.toml`（保存时会自动复制到 `configs/pid/<instance-id>.toml`）；
+- **已有部署热切换**：先将该文件复制到 `configs/pid/` 目录，再在主程序 **Instrument → Instrument Setup…** 的软件 PID 表下拉框中选中并应用。
 
 ## 读写与运行
 

@@ -292,7 +292,42 @@ class CryoconControllerTests(unittest.TestCase):
         )
         self.assertTrue(all(";" in command for command in transport.commands))
 
-    def test_pid_temperature_is_a_strict_upper_boundary(self) -> None:
+    def test_operator_pid_example_uses_requested_low_temperature_values(self) -> None:
+        path = ROOT / "instruments" / "cryocon_22c_24c" / "pid.operator-example.toml"
+        transport = FakeTransport()
+        controller = self._controller(transport, config=_config(pid_file=path))
+        controller.open()
+        for target, expected in (
+            (3.0, (0.1, 0.5, 0)), (8.0, (0.1, 0.5, 0)), (8.001, (0.1, 1, 0)),
+            (10.0, (0.1, 1, 0)), (10.001, (3, 10, 0)),
+            (100.0, (40, 30, 30)), (300.0, (40, 50, 0)),
+        ):
+            with self.subTest(target=target):
+                transport.commands.clear()
+                controller.set_target(target, 1.0, control="loop_1")
+                self.assertEqual(len(transport.commands), 5)
+                self.assertFalse(any("RANGE" in command for command in transport.commands))
+                self.assertEqual(transport.commands[:3], [
+                    f"LOOP 1:{parameter} {gain:g};{parameter}?"
+                    for parameter, gain in zip(("PGAIN", "IGAIN", "DGAIN"), expected)
+                ])
+        controller.close()
+
+    def test_pid_validation_rejects_nonpositive_duplicate_bool_and_unknown_keys(self) -> None:
+        invalid_tables = (
+            ("nonpositive", [{"temperature": 0.0, "p_gain": 1.0, "i_gain": 1.0, "d_gain": 0.0},
+                             {"temperature": 400.0, "p_gain": 1.0, "i_gain": 1.0, "d_gain": 0.0}]),
+            ("duplicate", [{"temperature": 10.0, "p_gain": 1.0, "i_gain": 1.0, "d_gain": 0.0},
+                           {"temperature": 10.0, "p_gain": 2.0, "i_gain": 1.0, "d_gain": 0.0},
+                           {"temperature": 400.0, "p_gain": 2.0, "i_gain": 1.0, "d_gain": 0.0}]),
+            ("bool_gain", [{"temperature": 400.0, "p_gain": True, "i_gain": 1.0, "d_gain": 0.0}]),
+            ("unknown_key", [{"temperature": 400.0, "p_gain": 1.0, "i_gain": 1.0, "d_gain": 0.0, "range": "LOW"}]),
+        )
+        for label, zones in invalid_tables:
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                Cryocon22C24CController._parse_pid_zones(zones, configured_maximum=400.0)
+
+    def test_pid_temperature_is_an_inclusive_upper_boundary(self) -> None:
         transport = FakeTransport()
         controller = self._controller(transport)
         controller.open()
@@ -303,6 +338,10 @@ class CryoconControllerTests(unittest.TestCase):
 
         transport.commands.clear()
         controller.set_target(10.0, 1.0, control="loop_1")
+        self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 1;PGAIN?")
+
+        transport.commands.clear()
+        controller.set_target(10.001, 1.0, control="loop_1")
         self.assertEqual(transport.commands[0], "LOOP 1:PGAIN 2;PGAIN?")
 
         transport.commands.clear()

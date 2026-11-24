@@ -4,7 +4,8 @@ Hardware validation (2026-11-05): the operator confirmed a completed
 temperature-control test on the connected Lake Shore 340. This covers the
 tested configuration, not all loop or sensor combinations.
 
-Version `0.2.1` supports OpenLab Control 0.19–0.20 and keeps a numeric
+Version `0.2.2.dev1` supports OpenLab Control 0.20.6+, adds on-demand sensor
+curve query/switching via **Instrument Setup**, and keeps a numeric
 `old reading` available while treating unused invalid inputs as unavailable.
 
 This System Instrument controls a Lake Shore Model 340 through a PyVISA

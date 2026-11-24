@@ -16,7 +16,7 @@ from . import cryocon_22c_24c as instrument
 
 @dataclass(frozen=True, slots=True)
 class PIDZone:
-    """PID 表的一行；``temperature`` 是选择这一行的严格上边界。"""
+    """PID 表的一行；``temperature`` 是包含等于的温区上限。"""
 
     temperature: float
     p_gain: float
@@ -515,7 +515,7 @@ class Cryocon22C24CController(SystemInstrument):
             (
                 zone
                 for zone in self._pid_zones
-                if target < zone.temperature
+                if target <= zone.temperature
             ),
             self._pid_zones[-1],
         )
@@ -687,10 +687,16 @@ class Cryocon22C24CController(SystemInstrument):
             )
         zones: list[PIDZone] = []
         previous_maximum = float("-inf")
+        allowed_keys = frozenset({"temperature", "p_gain", "i_gain", "d_gain", "heater_range"})
         for index, raw_zone in enumerate(raw_zones, start=1):
             if not isinstance(raw_zone, Mapping):
                 raise ValueError(f"zones[{index}] must be a table")
-            maximum = cls._finite_number(
+            unknown_keys = sorted(str(key) for key in raw_zone if key not in allowed_keys)
+            if unknown_keys:
+                raise ValueError(
+                    f"zones[{index}] contains unsupported key(s): {', '.join(unknown_keys)}"
+                )
+            maximum = cls._positive_number(
                 raw_zone.get("temperature"),
                 f"zones[{index}].temperature",
             )
@@ -756,6 +762,8 @@ class Cryocon22C24CController(SystemInstrument):
 
     @staticmethod
     def _finite_number(value: Any, label: str) -> float:
+        if isinstance(value, bool):
+            raise ValueError(f"{label} must be a finite number")
         try:
             result = float(value)
         except (TypeError, ValueError) as exc:

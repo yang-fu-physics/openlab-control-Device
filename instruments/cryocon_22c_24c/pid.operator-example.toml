@@ -1,0 +1,61 @@
+# Operator-provided cryostat example; not universal tuning or a default table.
+# Select explicitly only after checking suitability for the connected cryostat.
+# Converted from the operator-provided table; low-temperature PID updated 2026-11-24.
+# The original controller export's trailing all-zero row is excluded here.
+# Operator confirmed row 7 has I=30 and D=30.
+# No heater ranges were supplied. Existing instrument range is preserved.
+# Temperature is an inclusive upper boundary.
+
+[[zones]]
+temperature = 3.000000
+p_gain = 0.100000
+i_gain = 0.500000
+d_gain = 0.000000
+
+[[zones]]
+temperature = 8.000000
+p_gain = 0.100000
+i_gain = 0.500000
+d_gain = 0.000000
+
+[[zones]]
+temperature = 10.000000
+p_gain = 0.100000
+i_gain = 1.000000
+d_gain = 0.000000
+
+[[zones]]
+temperature = 15.000000
+p_gain = 3.000000
+i_gain = 10.000000
+d_gain = 0.000000
+
+[[zones]]
+temperature = 20.000000
+p_gain = 20.000000
+i_gain = 10.000000
+d_gain = 0.000000
+
+[[zones]]
+temperature = 50.000000
+p_gain = 40.000000
+i_gain = 10.000000
+d_gain = 0.000000
+
+[[zones]]
+temperature = 100.000000
+p_gain = 40.000000
+i_gain = 30.000000
+d_gain = 30.000000
+
+[[zones]]
+temperature = 300.000000
+p_gain = 40.000000
+i_gain = 50.000000
+d_gain = 0.000000
+
+[[zones]]
+temperature = 500.000000
+p_gain = 40.000000
+i_gain = 50.000000
+d_gain = 0.000000
