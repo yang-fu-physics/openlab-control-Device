@@ -18,6 +18,10 @@
 
 ## 离线安装与配置（4 步）
 
+Cryo-con `0.3.1.dev2` 按包含边界的温度上限选择 PID，例如目标恰好 8 K 使用 8 K 行。
+可选的 [`pid.operator-example.toml`](instruments/cryocon_22c_24c/pid.operator-example.toml)
+保存操作者提供的温区参数及低温调整，需核对适用性后显式选择；它不是通用默认整定值。
+
 每个 `instruments/<仪表ID>/` 都是独立完整的安装包，按**一种物理型号/协议**组织（同一台设备的多路温度和加热状态共用一个实例和一条连接）：
 
 1. 核对目标目录的 `README.md`、`instrument.toml` 和代码。

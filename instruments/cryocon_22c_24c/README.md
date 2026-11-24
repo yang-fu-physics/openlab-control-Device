@@ -18,13 +18,14 @@ CONTROL ON 时才允许控制；连接只读验证，不自动切换输入或开
 
 ```toml
 [[zones]]
-temperature = 10.0 # 严格上边界
+temperature = 10.0 # 包含等于的温区上限
 p_gain = 1.0
 i_gain = 4.0
 d_gain = 1.0
 # heater_range = "LOW" # 可选：LOW/MID/HI；不填写则保留仪表当前量程
 ```
 
+选取第一行满足目标温度 <= temperature 的 PID；例如恰好 3 K 使用 3 K 行。
 温度边界必须严格递增，最后一行覆盖 controller 最大温度。P/I/D 必须为有限值且
 在远程命令的 0–1000 范围内。手册建议 D 不超过 I/4；软件保留现场确认的原值，
 不再以这个比例拒绝或钳位参数。空表、非法数值或非法量程仍快速失败。
@@ -45,3 +46,15 @@ d_gain = 1.0
 
 请保留冷台现场 PID 文件和硬件独立过温保护。该模块不提供磁场，辅助温度不要再创建
 第二个连接到同一物理地址的仪表实例。
+
+
+### Operator-provided PID example
+
+`pid.operator-example.toml` preserves the operator's table, including I=30/D=30 at
+100 K, with the requested low-temperature entries: T<=8 K uses P=0.1/I=0.5/D=0;
+8<T<=10 K uses P=0.1/I=1/D=0. Higher-temperature rows are unchanged. The table
+covers targets through 500 K; actual targets remain bounded by the configured
+controller and Temp A limits. This example is specific to the operator's cryostat
+and is not a default or universally validated tuning table. Select it explicitly
+only after checking suitability for the connected system. The empty PID template
+continues to require a separately chosen table.

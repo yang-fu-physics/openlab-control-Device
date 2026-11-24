@@ -515,7 +515,7 @@ class Cryocon22C24CController(SystemInstrument):
             (
                 zone
                 for zone in self._pid_zones
-                if target < zone.temperature
+                if target <= zone.temperature
             ),
             self._pid_zones[-1],
         )
