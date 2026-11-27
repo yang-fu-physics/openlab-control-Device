@@ -8,6 +8,13 @@ setup_widget = "frontend:SetupWidget"
 kinds = ["temperature"]
 
 [[config_fields]]
+id = "model"
+label = "Controller Model (22C: Loop 1, 24C: Dual-Loop)"
+type = "choice"
+default = "22C"
+options = ["22C", "24C"]
+
+[[config_fields]]
 id = "io_timeout_seconds"
 label = "VISA I/O Timeout (s)"
 type = "number"
@@ -20,19 +27,6 @@ label = "Serial Baud Rate"
 type = "choice"
 default = "9600"
 options = ["9600", "19200", "38400", "57600", "115200"]
-
-[[config_fields]]
-id = "primary_loop"
-label = "Primary Control Loop"
-type = "choice"
-default = "1"
-options = ["1", "2"]
-
-[[config_fields]]
-id = "linked_loop_enabled"
-label = "Enable Dual-Loop Linked Control (24C Only)"
-type = "boolean"
-default = false
 
 [[config_fields]]
 id = "monitor_a_max_temperature"
@@ -83,7 +77,7 @@ readings = ["temp_a", "temp_b", "heater_output", "heater_range"]
 
 [[panels]]
 id = "linked_monitor"
-label = "Linked Loop Status"
+label = "Linked Loop Status (24C Only)"
 template = "readout_grid"
 readings = [
     "linked_setpoint",

@@ -1,14 +1,15 @@
 """OpenLab Control System Instrument：Cryo-con 22C/24C 温度控制器。
 
-支持两种运行模式：
-1. **单回路模式（默认，兼容 22C/24C）**：仅控制 ``primary_loop``（默认 Loop 1），不查询也不写入另一路。
-2. **24C 双回路联动模式（``linked_loop_enabled = true``）**：
-   - 仅限 Cryo-con 24C；若 ``open()`` 识别到 22C，直接报安全错误拒绝连接；
-   - 主回路（例如 Loop 2 控样品 B）按 ``[[zones]]`` 下发 PID 并以 ``x`` 为目标；
-   - 从回路（例如 Loop 1 控冷台/热沉 A）按 ``[[linked_target_zones]]`` 的分段公式由 ``x``
-     计算目标 ``T_linked``，再按 ``[[linked_pid_zones]]`` 以 ``T_linked`` 查表下发从回路 PID；
-   - ``moving`` 在任一回路处于斜坡（ramping）时为 ``True``，两路均结束斜坡才报 ``ready = True``；
-   - ``hold()`` 现读两路即时传感器温度各自保持，不套联动公式。
+通过单一 ``model`` 开关选择机型（``22C`` / ``24C``）：
+1. **``22C``（默认，单回路）**：仅有 Loop 1 单回路配置与 ``[[zones]]``，不查询也不写入 Loop 2。
+2. **``24C``（双回路分段公式联控）**：
+   - 默认主回路为 Loop 2（样品，绑定所选 ``main_reading``，如 Input B），从回路为 Loop 1
+     （冷台/热沉，绑定另一路输入，如 Input A）；亦可在 24C PID 文件顶层可选写 ``primary_loop = 1``；
+   - 两路分别按各自目标温度下发独立 PID 表（``[[zones]]`` 与 ``[[linked_pid_zones]]``）；
+   - 从回路目标由 ``[[linked_target_zones]]`` 的分段公式按主目标 ``x``（``<=`` 上限）计算；
+   - ``moving`` 在任一回路处于斜坡（ramping）时为 ``True``，两路均停爬才报 ``ready = True``；
+   - ``hold()`` 现读两路即时传感器温度各自保持，不套联动公式；
+   - ``open()`` 严格核对 ``*IDN?`` 型号与配置的 ``model`` 一致（防止 22C/24C 错配）。
 """
 
 from __future__ import annotations
@@ -71,6 +72,7 @@ class PIDProfile:
     primary_zones: tuple[PIDZone, ...]
     linked_pid_zones: tuple[PIDZone, ...] = ()
     linked_target_zones: tuple[LinkedTargetZone, ...] = ()
+    primary_loop: int = 2
 
 
 def _compile_linked_formula(formula: str) -> ast.AST:
@@ -175,7 +177,8 @@ class Cryocon22C24CController(SystemInstrument):
         self._transport_factory = transport_factory
         self._transport: instrument.QueryTransport | None = None
         self._status_validated = False
-        self._model = "24C"
+        self._configured_model = self._parse_model(config.extras.get("model", "22C"))
+        self._model = self._configured_model
         self._address = config.address
 
         primary_input = {"temp_a": "A", "temp_b": "B"}.get(config.main_reading)
@@ -184,17 +187,10 @@ class Cryocon22C24CController(SystemInstrument):
                 f"Unsupported Cryo-con main_reading {config.main_reading!r}"
             )
         self._primary_input = primary_input
-        self._primary_loop = self._parse_loop_number(
-            config.extras.get("primary_loop", 1)
-        )
-        self._linked_loop_enabled = self._parse_bool(
-            config.extras.get("linked_loop_enabled", False),
-            "linked_loop_enabled",
-        )
+        self._linked_loop_enabled = self._configured_model == "24C"
+        self._primary_loop = 2 if self._linked_loop_enabled else 1
         self._linked_loop: int | None = (
-            (2 if self._primary_loop == 1 else 1)
-            if self._linked_loop_enabled
-            else None
+            1 if self._linked_loop_enabled else None
         )
         self._linked_input: str | None = (
             ("B" if self._primary_input == "A" else "A")
@@ -244,13 +240,22 @@ class Cryocon22C24CController(SystemInstrument):
         self._pid_file = Path(config.extras["pid_file"]).resolve()
         self._pid_directory = self._pid_file.parent
         profile = self._load_profile_from_path(self._pid_file)
+        self._apply_profile(profile)
+        self._staged_pid: tuple[Path, PIDProfile] | None = None
+
+    def _apply_profile(self, profile: PIDProfile) -> None:
         self._pid_zones = profile.primary_zones
         self._linked_pid_zones = profile.linked_pid_zones
         self._linked_target_zones = profile.linked_target_zones
-        self._staged_pid: tuple[Path, PIDProfile] | None = None
+        if self._linked_loop_enabled:
+            self._primary_loop = profile.primary_loop
+            self._linked_loop = 1 if self._primary_loop == 2 else 2
+        else:
+            self._primary_loop = 1
+            self._linked_loop = None
 
     def open(self) -> None:
-        """建立 VISA 会话并只读验证型号、22C 单回路护栏、传感器与活动回路状态。"""
+        """建立 VISA 会话并只读验证型号与配置一致、传感器与活动回路状态。"""
 
         if self._transport is not None:
             return
@@ -275,13 +280,18 @@ class Cryocon22C24CController(SystemInstrument):
                     "CRYOCON_IDENTITY_MISMATCH",
                     self._address,
                 )
-            if normalized_model == "22C" and (
-                self._linked_loop_enabled or self._primary_loop != 1
-            ):
+            if normalized_model == "22C" and self._configured_model == "24C":
                 raise SafetyViolation(
-                    "Cryo-con 22C supports only single-loop Loop 1 control; "
-                    "disable linked dual-loop control and select Loop 1",
+                    "Connected Cryo-con 22C supports only single-loop Loop 1 control; "
+                    "switch Controller Model to 22C in Instrument Scanner",
                     "CRYOCON_22C_SINGLE_LOOP_ONLY",
+                    self._address,
+                )
+            if normalized_model != self._configured_model:
+                raise SafetyViolation(
+                    f"Connected Cryo-con {normalized_model} does not match configured "
+                    f"model {self._configured_model}; update Controller Model in Instrument Scanner",
+                    "CRYOCON_MODEL_MISMATCH",
                     self._address,
                 )
             self._model = normalized_model
@@ -808,14 +818,14 @@ class Cryocon22C24CController(SystemInstrument):
                         target.name,
                     ) from exc
             self._pid_file = target
-            self._pid_zones = profile.primary_zones
-            self._linked_pid_zones = profile.linked_pid_zones
-            self._linked_target_zones = profile.linked_target_zones
+            self._apply_profile(profile)
             self._staged_pid = None
             self.config.extras["pid_file"] = str(target)
         return {
             "current_pid_file": self._pid_file.name,
             "current_pid_path": str(self._pid_file),
+            "primary_loop": self._primary_loop,
+            "linked_loop": self._linked_loop,
             "linked_target_zones": [
                 {"temperature": z.temperature, "formula": z.formula}
                 for z in self._linked_target_zones
@@ -827,7 +837,8 @@ class Cryocon22C24CController(SystemInstrument):
         with path.open("rb") as handle:
             pid_config = tomllib.load(handle)
         unknown_top = sorted(
-            set(pid_config) - {"zones", "linked_pid_zones", "linked_target_zones"}
+            set(pid_config)
+            - {"zones", "linked_pid_zones", "linked_target_zones", "primary_loop"}
         )
         if unknown_top:
             raise ValueError(
@@ -839,8 +850,15 @@ class Cryocon22C24CController(SystemInstrument):
         )
         raw_linked_pid = pid_config.get("linked_pid_zones")
         raw_linked_targets = pid_config.get("linked_target_zones")
+        raw_primary_loop = pid_config.get("primary_loop")
 
         if not self._linked_loop_enabled:
+            if raw_primary_loop is not None:
+                parsed_loop = self._parse_loop_number(raw_primary_loop)
+                if parsed_loop != 1:
+                    raise ValueError(
+                        "Cryo-con 22C supports only Loop 1; primary_loop cannot be 2"
+                    )
             linked_pid = (
                 self._parse_pid_zones(
                     raw_linked_pid,
@@ -862,8 +880,14 @@ class Cryocon22C24CController(SystemInstrument):
                 primary_zones=primary_zones,
                 linked_pid_zones=linked_pid,
                 linked_target_zones=linked_targets,
+                primary_loop=1,
             )
 
+        primary_loop = (
+            2
+            if raw_primary_loop is None
+            else self._parse_loop_number(raw_primary_loop)
+        )
         linked_pid = self._parse_pid_zones(
             raw_linked_pid,
             configured_maximum=None,
@@ -878,6 +902,7 @@ class Cryocon22C24CController(SystemInstrument):
             primary_zones=primary_zones,
             linked_pid_zones=linked_pid,
             linked_target_zones=linked_targets,
+            primary_loop=primary_loop,
         )
 
     def _validate_linked_profile_samples(
@@ -1395,6 +1420,15 @@ class Cryocon22C24CController(SystemInstrument):
                 "The final linked_target_zones temperature must cover the configured maximum temperature"
             )
         return tuple(zones)
+
+    @staticmethod
+    def _parse_model(value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Controller model must be '22C' or '24C'")
+        normalized = value.strip().upper()
+        if normalized not in {"22C", "24C"}:
+            raise ValueError("Controller model must be '22C' or '24C'")
+        return normalized
 
     @staticmethod
     def _parse_loop_number(value: Any) -> int:

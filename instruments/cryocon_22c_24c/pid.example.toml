@@ -13,8 +13,10 @@ zones = []
 # heater_range = "LOW" # Optional: LOW, MID, or HI.
 #
 # ------------------------------------------------------------------------------
-# Optional 24C Dual-Loop Linked Control (disabled on 22C; required only when
-# linked_loop_enabled = true on Cryo-con 24C):
+# Optional 24C Dual-Loop Linked Control (used when Controller Model = "24C";
+# ignored/not needed when Controller Model = "22C"):
+#
+# primary_loop = 2 # Optional on 24C (default 2: Loop 2 = primary, Loop 1 = linked)
 #
 # 1) Secondary (linked) loop PID table, indexed by the linked loop's own target:
 # [[linked_pid_zones]]
