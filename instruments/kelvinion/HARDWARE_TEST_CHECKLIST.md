@@ -141,7 +141,7 @@ rm.close()
    - [ ] 核对两路设定值、爬坡率、功率百分比、加热档位、Mode、Zone 状态与仪表面板一致；
    - [ ] 若有未接探头的监控通道（如 `Temp E`–`H`），显示为缺失（`—`）而不触发主控错误；若主控探头断线，正确触发 `KELVINION_SENSOR_FAULT`。
 3. **双回路独立控制与 Hold**：
-   - [ ] 分别在 `Output 1 (A)` 与 `Output 2 (B)` 卡片上做小幅目标变更（如 `+0.50 K`，`1.00 K/min`），确认两路互不干扰、爬坡期间 `Ramping` 变为 `True`、到位后恢复 `False` 且进入稳态判定；
+   - [ ] 分别在 `Output 1 (A)` 与 `Output 2 (B)` 卡片上做小幅目标变更（如 `+0.50 K`，`1.00 K/min`），确认两路互不干扰、爬坡期间 `Ramping` 变为 `Ramping`、到位后恢复 `Idle` 且进入稳态判定（若工作设定值停滞不前，应保持原目标、`ready=False` 且显示 `Stalled`，绝不误判稳定）；
    - [ ] 爬坡中途点击 **Hold Current**，确认仅对该回路写入现读温度并停止爬坡，加热档位保持不变；
    - [ ] 在仪表面板将某路切为 Manual (`M`) 模式，确认 OpenLab 拒绝向该路写入目标（`KELVINION_MODE_MISMATCH`）；设回 Auto (`A`) 后恢复正常。
 4. **Instrument Setup 窗口**：

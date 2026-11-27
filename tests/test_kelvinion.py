@@ -28,12 +28,13 @@ for candidate in (
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
-from labcontrol.config import load_config  # noqa: E402
+from labcontrol.config import StabilityConfig, load_config  # noqa: E402
 from labcontrol.events import EventManager  # noqa: E402
 from labcontrol.instrument_manager import InstrumentManager  # noqa: E402
 from labcontrol.instruments.base import InstrumentError, SafetyViolation  # noqa: E402
 from labcontrol.instruments.manifest import load_instrument_manifest  # noqa: E402
-from labcontrol.models import InstrumentActivity, InstrumentKind  # noqa: E402
+from labcontrol.models import InstrumentActivity, InstrumentKind, StabilityState  # noqa: E402
+from labcontrol.stability import StabilityEvaluator  # noqa: E402
 from instrument_scanner import (  # noqa: E402
     InstrumentScannerWindow,
     VisaScanResult,
@@ -490,7 +491,7 @@ class KelvinionDriverTests(unittest.TestCase):
         self.assertEqual(status["auxiliary"]["loop_1_output"], 25.5)
         self.assertEqual(status["auxiliary"]["loop_1_range"], "HIGH")
         self.assertEqual(status["auxiliary"]["loop_1_setpoint"], 10.0)
-        self.assertFalse(status["auxiliary"]["loop_1_ramping"])
+        self.assertEqual(status["auxiliary"]["loop_1_ramping"], "Idle")
         self.assertEqual(status["auxiliary"]["loop_1_mode"], "Auto")
         self.assertEqual(status["auxiliary"]["loop_1_zone"], "OFF")
         self.assertEqual(status["auxiliary"]["loop_2_output"], 12.0)
@@ -573,9 +574,9 @@ class KelvinionDriverTests(unittest.TestCase):
         self.assertEqual(st1["controls"]["output_1"], {"target": 50.0, "rate": 2.5, "moving": True, "ready": False})
         self.assertEqual(st1["controls"]["output_2"], {"target": 15.0, "rate": 1.5, "moving": True, "ready": False})
         self.assertEqual(st1["auxiliary"]["loop_1_setpoint"], 15.0)
-        self.assertTrue(st1["auxiliary"]["loop_1_ramping"])
+        self.assertEqual(st1["auxiliary"]["loop_1_ramping"], "Ramping")
         self.assertEqual(st1["auxiliary"]["loop_2_setpoint"], 18.5)
-        self.assertTrue(st1["auxiliary"]["loop_2_ramping"])
+        self.assertEqual(st1["auxiliary"]["loop_2_ramping"], "Ramping")
 
         # Output 2 arrives at 15.00 K while Output 1 is still ramping.
         now[0] += 5.0
@@ -587,6 +588,7 @@ class KelvinionDriverTests(unittest.TestCase):
         self.assertFalse(st2["controls"]["output_2"]["moving"])
         self.assertTrue(st2["controls"]["output_2"]["ready"])
         self.assertEqual(st2["controls"]["output_2"]["target"], 15.0)
+        self.assertEqual(st2["auxiliary"]["loop_2_ramping"], "Idle")
 
         # Output 1 arrives at 50.00 K.
         now[0] += 5.0
@@ -594,9 +596,9 @@ class KelvinionDriverTests(unittest.TestCase):
         st3 = ctrl.read_status()
         self.assertFalse(st3["controls"]["output_1"]["moving"])
         self.assertTrue(st3["controls"]["output_1"]["ready"])
-        self.assertFalse(st3["auxiliary"]["loop_1_ramping"])
+        self.assertEqual(st3["auxiliary"]["loop_1_ramping"], "Idle")
 
-        # Front-panel reversal override cancels stuck ramp immediately.
+        # Front-panel reversal keeps original commanded target, reports Stalled and ready=False.
         ctrl.set_target(80.0, 2.0, control="output_1")
         now[0] += 2.0
         transport.responses["[READ:SETP:A]"] = "[55.000]\r\n"
@@ -605,24 +607,147 @@ class KelvinionDriverTests(unittest.TestCase):
         transport.responses["[READ:SETP:A]"] = "[40.000]\r\n"  # reversed!
         st_override = ctrl.read_status()
         self.assertFalse(st_override["controls"]["output_1"]["moving"])
-        self.assertEqual(st_override["controls"]["output_1"]["target"], 40.0)
+        self.assertFalse(st_override["controls"]["output_1"]["ready"])
+        self.assertEqual(st_override["controls"]["output_1"]["target"], 80.0)
+        self.assertEqual(st_override["auxiliary"]["loop_1_setpoint"], 40.0)
+        self.assertEqual(st_override["auxiliary"]["loop_1_ramping"], "Stalled")
 
-        # Stalled working setpoint releases moving=True after stall timeout.
-        ctrl.set_target(70.0, 2.0, control="output_1")
+        # Subsequent poll still stuck at 40 K remains Stalled / ready=False / target=80 K.
+        now[0] += 2.0
+        st_override2 = ctrl.read_status()
+        self.assertFalse(st_override2["controls"]["output_1"]["moving"])
+        self.assertFalse(st_override2["controls"]["output_1"]["ready"])
+        self.assertEqual(st_override2["controls"]["output_1"]["target"], 80.0)
+        self.assertEqual(st_override2["auxiliary"]["loop_1_ramping"], "Stalled")
+
+        # If setpoint later resumes moving toward 80 K and arrives, it cleanly recovers.
+        now[0] += 2.0
+        transport.responses["[READ:SETP:A]"] = "[60.000]\r\n"
+        st_resume = ctrl.read_status()
+        self.assertTrue(st_resume["controls"]["output_1"]["moving"])
+        self.assertFalse(st_resume["controls"]["output_1"]["ready"])
+        self.assertEqual(st_resume["auxiliary"]["loop_1_ramping"], "Ramping")
+        now[0] += 2.0
+        transport.responses["[READ:SETP:A]"] = "[80.000]\r\n"
+        st_arrived = ctrl.read_status()
+        self.assertFalse(st_arrived["controls"]["output_1"]["moving"])
+        self.assertTrue(st_arrived["controls"]["output_1"]["ready"])
+        self.assertEqual(st_arrived["auxiliary"]["loop_1_ramping"], "Idle")
+
+        # Passive front-panel ramp detected between polls when idle.
+        now[0] += 1.0
+        transport.responses["[READ:SETP:A]"] = "[81.000]\r\n"
+        st_passive = ctrl.read_status()
+        self.assertTrue(st_passive["controls"]["output_1"]["moving"])
+        self.assertEqual(st_passive["auxiliary"]["loop_1_ramping"], "Ramping")
+        now[0] += 1.0
+        st_passive_done = ctrl.read_status()
+        self.assertFalse(st_passive_done["controls"]["output_1"]["moving"])
+        self.assertEqual(st_passive_done["auxiliary"]["loop_1_ramping"], "Idle")
+        ctrl.close()
+
+    def test_stalled_ramp_preserves_target_stays_not_ready_and_prevents_false_stability(self) -> None:
+        """P1 regression: commanded 50 K while working setpoint & Temp A remain stuck at 10 K."""
+
+        now = [100.0]
+        transport = FakeKelvinionTransport(ramping_working_setpoint=True)
+        ctrl = KelvinionController(
+            _config(),
+            transport_factory=lambda *a, **k: transport,
+            clock=lambda: now[0],
+        )
+        ctrl.open()
+        ctrl.read_status()
+
+        # Command 50 K; instrument working setpoint and actual Temp A stay stuck at 10 K.
+        ctrl.set_target(50.0, 2.0, control="output_1")
+        evaluator = StabilityEvaluator(
+            StabilityConfig(
+                tolerance=0.05,
+                max_slope_per_minute=0.05,
+                dwell_seconds=5.0,
+                timeout_seconds=10.0,
+                window_seconds=2.0,
+            )
+        )
+        evaluator.reset(50.0, now[0])
+
+        # Within stall window: still ramping, target=50 K, stability timer paused.
         now[0] += 5.0
-        self.assertTrue(ctrl.read_status()["controls"]["output_1"]["moving"])
-        now[0] += 25.0  # > 20s stall timeout with no movement
-        st_stall = ctrl.read_status()
-        self.assertFalse(st_stall["controls"]["output_1"]["moving"])
-        self.assertTrue(st_stall["controls"]["output_1"]["ready"])
-        self.assertEqual(st_stall["controls"]["output_1"]["target"], 40.0)
+        st_wait = ctrl.read_status()
+        self.assertEqual(st_wait["controls"]["output_1"], {"target": 50.0, "rate": 2.0, "moving": True, "ready": False})
+        self.assertEqual(st_wait["auxiliary"]["loop_1_ramping"], "Ramping")
+        res_wait = evaluator.update(
+            float(st_wait["value"]),
+            float(st_wait["target"]),
+            now[0],
+            ready=bool(st_wait["ready"]),
+            moving=bool(st_wait["moving"]),
+        )
+        self.assertEqual(res_wait.state, StabilityState.MOVING)
 
-        # Passive front-panel ramp detected between polls.
+        # Past stall timeout (25 s > 20 s): MUST keep target=50 K, moving=False, ready=False, Stalled!
+        now[0] += 25.0
+        st_stall = ctrl.read_status()
+        self.assertEqual(st_stall["target"], 50.0)
+        self.assertEqual(st_stall["controls"]["output_1"], {"target": 50.0, "rate": 2.0, "moving": False, "ready": False})
+        self.assertEqual(st_stall["auxiliary"]["loop_1_setpoint"], 10.0)
+        self.assertEqual(st_stall["auxiliary"]["loop_1_ramping"], "Stalled")
+
+        # Repeated polls stuck at 10 K must NEVER stabilize at 10 K and must time out cleanly.
+        last_res = None
+        for _ in range(8):
+            now[0] += 2.0
+            st = ctrl.read_status()
+            self.assertEqual(st["target"], 50.0)
+            self.assertFalse(st["moving"])
+            self.assertFalse(st["ready"])
+            self.assertEqual(st["auxiliary"]["loop_1_ramping"], "Stalled")
+            last_res = evaluator.update(
+                float(st["value"]),
+                float(st["target"]),
+                now[0],
+                ready=bool(st["ready"]),
+                moving=bool(st["moving"]),
+            )
+            self.assertNotEqual(last_res.state, StabilityState.STABLE)
+        assert last_res is not None
+        self.assertEqual(last_res.state, StabilityState.TIMED_OUT)
+
+        # Even if Temp A drifts to 50.0 K while working setpoint is still stalled at 10 K,
+        # ready=False prevents false STABLE until setpoint arrives or operator commands hold().
+        transport.responses["[READ:K:A]"] = "[50.000]\r\n"
+        evaluator2 = StabilityEvaluator(
+            StabilityConfig(
+                tolerance=0.05,
+                max_slope_per_minute=0.05,
+                dwell_seconds=2.0,
+                timeout_seconds=100.0,
+                window_seconds=2.0,
+            )
+        )
+        evaluator2.reset(50.0, now[0])
+        for _ in range(5):
+            now[0] += 1.0
+            st = ctrl.read_status()
+            res2 = evaluator2.update(
+                float(st["value"]),
+                float(st["target"]),
+                now[0],
+                ready=bool(st["ready"]),
+                moving=bool(st["moving"]),
+            )
+            self.assertNotEqual(res2.state, StabilityState.STABLE)
+
+        # Explicit hold() clears the stalled ramp cleanly.
+        transport.responses["[READ:K:A]"] = "[10.000]\r\n"
+        ctrl.hold(control="output_1")
         now[0] += 1.0
-        transport.responses["[READ:SETP:A]"] = "[41.000]\r\n"
-        self.assertTrue(ctrl.read_status()["controls"]["output_1"]["moving"])
-        now[0] += 1.0
-        self.assertFalse(ctrl.read_status()["controls"]["output_1"]["moving"])
+        st_held = ctrl.read_status()
+        self.assertEqual(st_held["target"], 10.0)
+        self.assertFalse(st_held["moving"])
+        self.assertTrue(st_held["ready"])
+        self.assertEqual(st_held["auxiliary"]["loop_1_ramping"], "Idle")
         ctrl.close()
 
     def test_hv01_ack_and_hv02_unit_suffix_toggles(self) -> None:

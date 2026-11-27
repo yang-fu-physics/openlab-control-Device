@@ -80,6 +80,7 @@ class _ActiveRamp:
     rate_k_per_min: float
     last_progress_time: float
     direction: int
+    stalled: bool = False
 
 
 class KelvinionController(SystemInstrument):
@@ -279,7 +280,7 @@ class KelvinionController(SystemInstrument):
 
         now = self._clock()
         output_snapshots: dict[str, protocol.OutputReadback] = {}
-        motion_by_control: dict[str, tuple[float, float, bool, bool]] = {}
+        motion_by_control: dict[str, tuple[float, float, bool, bool, str]] = {}
 
         for output, should_poll in (
             ("A", self._poll_output_1),
@@ -293,7 +294,7 @@ class KelvinionController(SystemInstrument):
             )
             output_snapshots[output] = readback
             control_id = _OUTPUT_TO_CONTROL[output]
-            target, moving, ready = self._evaluate_loop_motion(
+            target, moving, ready, ramp_state = self._evaluate_loop_motion(
                 control_id,
                 readback.working_setpoint_k,
                 readback.ramp_rate_k_per_min,
@@ -304,6 +305,7 @@ class KelvinionController(SystemInstrument):
                 readback.ramp_rate_k_per_min,
                 moving,
                 ready,
+                ramp_state,
             )
 
         all_values: dict[str, float | int | bool | str | None] = {
@@ -321,12 +323,12 @@ class KelvinionController(SystemInstrument):
                 all_values[f"{prefix}_mode"] = None
                 all_values[f"{prefix}_zone"] = None
             else:
-                _target, _rate, moving, _ready = motion_by_control[control_id]
+                _target, _rate, _moving, _ready, ramp_state = motion_by_control[control_id]
                 all_values[f"{prefix}_output"] = snap.power_percent
                 all_values[f"{prefix}_range"] = snap.heater_range
                 # UNVERIFIED_PROTOCOL (HV-03): 辅助面板显示仪表原始 [READ:SETP:CH] 读数（爬坡工作设定值）。
                 all_values[f"{prefix}_setpoint"] = snap.working_setpoint_k
-                all_values[f"{prefix}_ramping"] = moving
+                all_values[f"{prefix}_ramping"] = ramp_state
                 all_values[f"{prefix}_mode"] = "Auto" if snap.mode == "A" else "Manual"
                 all_values[f"{prefix}_zone"] = snap.zone_state
 
@@ -340,7 +342,7 @@ class KelvinionController(SystemInstrument):
         if self._control_bindings:
             controls_payload: dict[str, dict[str, object]] = {}
             for control_id in self._control_bindings:
-                target, rate, moving, ready = motion_by_control[control_id]
+                target, rate, moving, ready, _ramp_state = motion_by_control[control_id]
                 controls_payload[control_id] = {
                     "target": target,
                     "rate": rate,
@@ -350,7 +352,7 @@ class KelvinionController(SystemInstrument):
             result["controls"] = controls_payload
 
             if self._primary_control is not None:
-                p_target, p_rate, p_moving, p_ready = motion_by_control[
+                p_target, p_rate, p_moving, p_ready, _p_state = motion_by_control[
                     self._primary_control
                 ]
                 result["target"] = p_target
@@ -1133,17 +1135,22 @@ class KelvinionController(SystemInstrument):
         working_setpoint: float,
         ramp_rate_k_per_min: float,
         now: float,
-    ) -> tuple[float, bool, bool]:
-        """UNVERIFIED_PROTOCOL (HV-03): 根据爬坡工作设定值推算 (target, moving, ready)。"""
+    ) -> tuple[float, bool, bool, str]:
+        """UNVERIFIED_PROTOCOL (HV-03): 根据爬坡工作设定值推算 (target, moving, ready, ramp_state)。
+
+        若爬坡停滞或工作设定值反向偏离原目标，严禁丢弃原目标或误报 ``ready=True``：必须保留
+        ``commanded_target``，报告 ``moving=False``、``ready=False``、``ramp_state='Stalled'``，
+        使核心稳态判定启动超时计时且绝不会在错误温度误判稳定。
+        """
 
         ramp = self._active_ramps.get(control_id)
         if ramp is not None:
             if abs(working_setpoint - ramp.commanded_target) <= _SETPOINT_REACHED_TOL_K:
                 self._active_ramps.pop(control_id, None)
                 self._last_observed_setpoints[control_id] = working_setpoint
-                return working_setpoint, False, True
+                return working_setpoint, False, True, "Idle"
 
-            # 检测前面板人工反向改写或越过目标，防止状态卡死在旧目标上。
+            # 检测前面板人工反向改写或越过目标：保留原目标并标记停滞/未就绪，避免在错误温度判稳。
             overshot = (
                 (ramp.direction > 0 and working_setpoint > ramp.commanded_target + _EXTERNAL_OVERRIDE_TOL_K)
                 or (ramp.direction < 0 and working_setpoint < ramp.commanded_target - _EXTERNAL_OVERRIDE_TOL_K)
@@ -1153,19 +1160,24 @@ class KelvinionController(SystemInstrument):
                 < -_EXTERNAL_OVERRIDE_TOL_K
             )
             if overshot or reversed_move:
-                self._active_ramps.pop(control_id, None)
+                ramp.stalled = True
+                ramp.last_setpoint = working_setpoint
                 self._last_observed_setpoints[control_id] = working_setpoint
-                return working_setpoint, False, True
+                return ramp.commanded_target, False, False, "Stalled"
 
-            progressed = (
-                (working_setpoint - ramp.last_setpoint) * ramp.direction
-                >= _SETPOINT_STEP_EPS_K
-            )
+            prev_distance = abs(ramp.last_setpoint - ramp.commanded_target)
+            curr_distance = abs(working_setpoint - ramp.commanded_target)
+            progressed = (prev_distance - curr_distance) >= _SETPOINT_STEP_EPS_K
             if progressed:
                 ramp.last_setpoint = working_setpoint
                 ramp.last_progress_time = now
+                ramp.stalled = False
                 self._last_observed_setpoints[control_id] = working_setpoint
-                return ramp.commanded_target, True, False
+                return ramp.commanded_target, True, False, "Ramping"
+
+            if ramp.stalled:
+                self._last_observed_setpoints[control_id] = working_setpoint
+                return ramp.commanded_target, False, False, "Stalled"
 
             eff_rate = max(
                 0.05,
@@ -1174,18 +1186,18 @@ class KelvinionController(SystemInstrument):
             step_seconds = 0.6 / eff_rate  # 0.01 K / (eff_rate / 60 s)
             stall_timeout = max(_MIN_RAMP_STALL_TIMEOUT_SECONDS, 4.0 * step_seconds)
             if now - ramp.last_progress_time >= stall_timeout:
-                self._active_ramps.pop(control_id, None)
+                ramp.stalled = True
                 self._last_observed_setpoints[control_id] = working_setpoint
-                return working_setpoint, False, True
+                return ramp.commanded_target, False, False, "Stalled"
 
             self._last_observed_setpoints[control_id] = working_setpoint
-            return ramp.commanded_target, True, False
+            return ramp.commanded_target, True, False, "Ramping"
 
         previous = self._last_observed_setpoints.get(control_id)
         self._last_observed_setpoints[control_id] = working_setpoint
         if previous is not None and abs(working_setpoint - previous) >= _SETPOINT_STEP_EPS_K:
-            return working_setpoint, True, False
-        return working_setpoint, False, True
+            return working_setpoint, True, False, "Ramping"
+        return working_setpoint, False, True, "Idle"
 
     def _require_control_binding(self, control: str) -> _ControlBinding:
         cid = str(control).strip()
