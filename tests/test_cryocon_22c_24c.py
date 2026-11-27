@@ -1075,6 +1075,89 @@ class CryoconControllerTests(unittest.TestCase):
         self.assertTrue(w_22c.linked_group.isHidden())
         ctrl_22c.close()
 
+    def test_24c_hot_swap_primary_loop_verifies_hardware_source_before_control(self) -> None:
+        """PR #9 P1 regression: hot-swapping primary_loop must verify live hardware SOURCE before activating."""
+
+        with tempfile.TemporaryDirectory() as temp:
+            pid_dir = Path(temp)
+            linked_body = (
+                "[[zones]]\ntemperature = 400.0\np_gain = 10.0\ni_gain = 20.0\nd_gain = 1.0\n"
+                "[[linked_pid_zones]]\ntemperature = 320.0\np_gain = 15.0\ni_gain = 25.0\nd_gain = 0.0\n"
+                '[[linked_target_zones]]\ntemperature = 310.0\nformula = "x - 0.5"\n'
+                '[[linked_target_zones]]\ntemperature = 400.0\nformula = "290"\n'
+            )
+            pid_loop2 = pid_dir / "primary_loop2.toml"
+            pid_loop1 = pid_dir / "primary_loop1.toml"
+            pid_loop2.write_text("primary_loop = 2\n" + linked_body, encoding="utf-8")
+            pid_loop1.write_text("primary_loop = 1\n" + linked_body, encoding="utf-8")
+
+            # Hardware has Loop 1 -> CHA (Temp A max 320 K), Loop 2 -> CHB (Sample B).
+            transport = FakeTransport(model="24C")
+            transport.dual_status = _dual_status(loop1_source="CHA", loop2_source="CHB")
+            controller = self._controller(
+                transport,
+                config=self._linked_24c_config(pid_file=pid_loop2),
+            )
+            controller.open()
+            transport.commands.clear()
+
+            # 1) Attempting apply_setup to primary_loop=1 fails BEFORE staging or writing anything.
+            with self.assertRaises(SafetyViolation) as setup_err:
+                controller.execute_action("apply_setup", {"pid_file": "primary_loop1.toml"})
+            self.assertEqual(setup_err.exception.code, "CRYOCON_CONFIGURATION_FAULT")
+            self.assertEqual(controller._primary_loop, 2)
+            self.assertEqual(controller._pid_file, pid_loop2.resolve())
+            self.assertEqual(transport.commands, [DUAL_LOOP_STATUS_QUERY])
+
+            # 2) Direct apply_config_updates to primary_loop=1 is also rejected without mutating loops.
+            transport.commands.clear()
+            with self.assertRaises(SafetyViolation) as commit_err:
+                controller.apply_config_updates({"pid_file": str(pid_loop1)})
+            self.assertEqual(commit_err.exception.code, "CRYOCON_CONFIGURATION_FAULT")
+            self.assertEqual(controller._primary_loop, 2)
+            self.assertEqual(controller._linked_loop, 1)
+            self.assertEqual(controller._pid_file, pid_loop2.resolve())
+            self.assertEqual(transport.commands, [DUAL_LOOP_STATUS_QUERY])
+
+            # Immediate set_target(350 K) must STILL route 350 K to Loop 2 (CHB) and 290 K to Loop 1 (CHA).
+            transport.commands.clear()
+            controller.set_target(350.0, 2.0, control="loop_1")
+            self.assertEqual(
+                transport.commands[-2:],
+                ["LOOP 1:SETPT 290;SETPT?", "LOOP 2:SETPT 350;SETPT?"],
+            )
+
+            # 3) If hardware SOURCE actually matches primary_loop=1 (Loop 1->CHB, Loop 2->CHA),
+            # hot-swap succeeds and routes 350 K to Loop 1 (CHB) and 290 K to Loop 2 (CHA).
+            transport.dual_status = _dual_status(
+                loop1_source="CHB",
+                loop2_source="CHA",
+                loop1_setpoint="295.5",
+                loop2_setpoint="295.0",
+            )
+            applied = controller.execute_action("apply_setup", {"pid_file": "primary_loop1.toml"})
+            committed = controller.apply_config_updates(applied["config_updates"])
+            self.assertEqual(committed["primary_loop"], 1)
+            self.assertEqual(committed["linked_loop"], 2)
+            transport.commands.clear()
+            controller.set_target(350.0, 2.0, control="loop_1")
+            self.assertEqual(
+                transport.commands[-2:],
+                ["LOOP 2:SETPT 290;SETPT?", "LOOP 1:SETPT 350;SETPT?"],
+            )
+
+            # 4) A failed read_status() invalidates status and blocks set_target()/hold() without SETPT.
+            transport.dual_status = _dual_status(loop1_source="CHA", loop2_source="CHB")
+            with self.assertRaises(SafetyViolation) as poll_err:
+                controller.read_status()
+            self.assertEqual(poll_err.exception.code, "CRYOCON_CONFIGURATION_FAULT")
+            transport.commands.clear()
+            with self.assertRaises(InstrumentError) as blocked_err:
+                controller.set_target(350.0, 2.0, control="loop_1")
+            self.assertEqual(blocked_err.exception.code, "CRYOCON_STATUS_UNAVAILABLE")
+            self.assertEqual(transport.commands, [])
+            controller.close()
+
 
 if __name__ == "__main__":
     unittest.main()

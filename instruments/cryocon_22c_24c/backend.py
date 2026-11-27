@@ -317,6 +317,7 @@ class Cryocon22C24CController(SystemInstrument):
         """读取所选主温度、辅助温度与活动回路状态；24C 联控时两路均停爬才 ready。"""
 
         transport = self._require_transport()
+        self._status_validated = False
         if not self._linked_loop_enabled:
             try:
                 status = instrument.read_status(
@@ -456,6 +457,8 @@ class Cryocon22C24CController(SystemInstrument):
         del mode, control
         primary_target = self._bounded_target(value)
         rate = self._bounded_rate(rate_per_minute)
+        self._require_transport()
+        self._require_validated_status()
         if not self._linked_loop_enabled:
             self._apply_single_loop_pid_and_target(
                 self._primary_loop,
@@ -477,6 +480,7 @@ class Cryocon22C24CController(SystemInstrument):
 
         del control
         transport = self._require_transport()
+        self._require_validated_status()
         rate = self._bounded_rate(self._hold_rate)
 
         if not self._linked_loop_enabled:
@@ -752,6 +756,12 @@ class Cryocon22C24CController(SystemInstrument):
                         "CRYOCON_INVALID_PID_FILE",
                         requested_name,
                     ) from exc
+                # 若新 PID 表改变了 24C 主从回路编号，在暂存或写入任何参数前先实测核对硬件 SOURCE。
+                if self._linked_loop_enabled and new_profile.primary_loop != self._primary_loop:
+                    self._verify_hardware_loop_sources(
+                        transport,
+                        primary_loop=new_profile.primary_loop,
+                    )
                 new_pid_file = resolved_candidate
 
         summary_parts: list[str] = []
@@ -817,6 +827,18 @@ class Cryocon22C24CController(SystemInstrument):
                         "CRYOCON_INVALID_PID_FILE",
                         target.name,
                     ) from exc
+            if self._linked_loop_enabled and profile.primary_loop != self._primary_loop:
+                if self._transport is not None:
+                    try:
+                        self._verify_hardware_loop_sources(
+                            self._transport,
+                            primary_loop=profile.primary_loop,
+                        )
+                    except Exception:
+                        self._staged_pid = None
+                        raise
+                else:
+                    self._status_validated = False
             self._pid_file = target
             self._apply_profile(profile)
             self._staged_pid = None
@@ -1160,6 +1182,55 @@ class Cryocon22C24CController(SystemInstrument):
         if control.strip().upper() != "ON":
             self._configuration_fault("Controller reports CONTROL OFF")
 
+    def _validate_loop_source(
+        self,
+        loop_state: instrument.LoopReadback,
+        *,
+        expected_input: str,
+    ) -> None:
+        if loop_state.loop_source.strip().upper() not in {
+            expected_input,
+            f"CH{expected_input}",
+        }:
+            self._configuration_fault(
+                f"Loop {loop_state.loop} source is {loop_state.loop_source!r}, expected input {expected_input}"
+            )
+
+    def _verify_hardware_loop_sources(
+        self,
+        transport: instrument.QueryTransport,
+        *,
+        primary_loop: int,
+    ) -> None:
+        """热切 24C 主从回路编号前，即时查询硬件两路 SOURCE 并确认与配置输入完全一致。"""
+
+        if not self._linked_loop_enabled:
+            return
+        assert self._linked_input is not None
+        linked_loop = 1 if primary_loop == 2 else 2
+        try:
+            dual = instrument.read_dual_loop_status(transport)
+        except instrument.CryoconProtocolError as exc:
+            raise SafetyViolation(
+                str(exc),
+                "CRYOCON_INVALID_READBACK",
+                self._address,
+            ) from exc
+        except Exception as exc:
+            raise InstrumentError(
+                f"Cryo-con dual-loop source verification failed: {exc}",
+                "CRYOCON_COMMUNICATION_FAILED",
+                self._address,
+            ) from exc
+        self._validate_loop_source(
+            dual.loop(primary_loop),
+            expected_input=self._primary_input,
+        )
+        self._validate_loop_source(
+            dual.loop(linked_loop),
+            expected_input=self._linked_input,
+        )
+
     def _validate_loop(
         self,
         loop_state: instrument.LoopReadback,
@@ -1168,13 +1239,7 @@ class Cryocon22C24CController(SystemInstrument):
         is_primary: bool,
     ) -> None:
         label = f"Loop {loop_state.loop}"
-        if loop_state.loop_source.strip().upper() not in {
-            expected_input,
-            f"CH{expected_input}",
-        }:
-            self._configuration_fault(
-                f"{label} source is {loop_state.loop_source!r}, expected input {expected_input}"
-            )
+        self._validate_loop_source(loop_state, expected_input=expected_input)
         if loop_state.loop_type.strip().upper() != "RAMPP":
             self._configuration_fault(
                 f"{label} type is {loop_state.loop_type!r}, expected RAMPP"
@@ -1297,6 +1362,14 @@ class Cryocon22C24CController(SystemInstrument):
                 self._address,
             )
         return self._transport
+
+    def _require_validated_status(self) -> None:
+        if not self._status_validated:
+            raise InstrumentError(
+                "Cryo-con has no validated full status snapshot",
+                "CRYOCON_STATUS_UNAVAILABLE",
+                self._address,
+            )
 
     @classmethod
     def _parse_pid_zones(
