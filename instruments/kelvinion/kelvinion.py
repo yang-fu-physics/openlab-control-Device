@@ -21,8 +21,21 @@ INPUT_CHANNELS_MINI: tuple[str, ...] = ("A", "B")
 OUTPUT_CHANNELS_STANDARD: tuple[str, ...] = ("A", "B")
 OUTPUT_CHANNELS_MINI: tuple[str, ...] = ("A",)
 
-# 2026-11-27 空载实测（V2.2.6b6）确认未启用传感器通道 [READ:T:CH] 返回 [OFF]。
+# 2026-11-27 空载实测（V2.2.6b6）确认：
+# - 未启用通道 [READ:T:CH] 返回 [OFF]，且支持 [SET:T:CH:OFF]；
+# - [SET:T:CH:CERNOX] 回读为 [NTCRTD]，[SET:T:CH:RO105] 回读为 [RO]；
+# - PT100 / PT1000 / DIODE 读写 token 一致。
 SENSOR_TYPES: tuple[str, ...] = ("OFF", "CERNOX", "PT100", "PT1000", "DIODE", "RO105")
+SENSOR_TYPE_ALIASES: dict[str, str] = {
+    "OFF": "OFF",
+    "CERNOX": "CERNOX",
+    "NTCRTD": "CERNOX",
+    "PT100": "PT100",
+    "PT1000": "PT1000",
+    "DIODE": "DIODE",
+    "RO105": "RO105",
+    "RO": "RO105",
+}
 HEATER_RANGES: tuple[str, ...] = ("OFF", "LOW", "MED", "HIGH")
 ZONE_NAMES: tuple[str, ...] = ("ZONE1", "ZONE2", "ZONE3", "ZONE4", "ZONE5")
 ALLOWED_BAUD_RATES: tuple[int, ...] = (115200, 9600, 19200, 38400, 57600)
@@ -540,14 +553,25 @@ def write_setpoint_and_readback(
 # ---- Setup / on-demand configuration commands (NO Filter, NO Excitation, NO Reversal) ----
 
 
+def normalize_sensor_type(sensor_type: str) -> str:
+    """将 Kelvinion 传感器类型归一化为规范写入枚举（如 NTCRTD->CERNOX、RO->RO105）。"""
+
+    token = str(sensor_type).strip().upper()
+    normalized = SENSOR_TYPE_ALIASES.get(token)
+    if normalized is None:
+        raise ValueError(f"Unsupported Kelvinion sensor type: {sensor_type!r}")
+    return normalized
+
+
 def read_sensor_type(transport: KelvinionTransport, channel: str) -> str:
-    """查询输入传感器类型 ``[READ:T:CH]``。"""
+    """查询输入传感器类型 ``[READ:T:CH]``，并归一化 V2.2.6b6 回读别名（NTCRTD->CERNOX、RO->RO105）。"""
 
     ch = _normalize_input_channel(channel)
     payload = query_command(transport, f"READ:T:{ch}").upper()
-    if payload not in SENSOR_TYPES:
+    normalized = SENSOR_TYPE_ALIASES.get(payload)
+    if normalized is None:
         raise KelvinionProtocolError(f"Invalid [READ:T:{ch}] sensor type: {payload!r}")
-    return payload
+    return normalized
 
 
 def write_sensor_type_and_verify(
@@ -557,16 +581,14 @@ def write_sensor_type_and_verify(
     *,
     expects_ack: bool = False,
 ) -> str:
-    """写入输入传感器类型 ``[SET:T:CH:VALUE]`` 并回读确认。
+    """写入输入传感器类型 ``[SET:T:CH:VALUE]`` 并回读归一化确认。
 
-    UNVERIFIED_PROTOCOL (HV-08): 2026-11-27 V2.2.6b6 空载实测确认 ``[READ:T:CH]`` 返回 ``[OFF]``，
-    但 ``[SET:T:CH:OFF]`` 及各传感器类型的串口写入尚未在实机上验证。
+    2026-11-27 V2.2.6b6 空载实测确认：写入 ``CERNOX`` / ``RO105`` / ``PT100`` / ``PT1000`` /
+    ``DIODE`` / ``OFF`` 均无 ACK 且生效，其中 ``CERNOX`` 回读 ``[NTCRTD]``、``RO105`` 回读 ``[RO]``。
     """
 
     ch = _normalize_input_channel(channel)
-    requested = str(sensor_type).strip().upper()
-    if requested not in SENSOR_TYPES:
-        raise ValueError(f"Unsupported Kelvinion sensor type: {sensor_type!r}")
+    requested = normalize_sensor_type(sensor_type)
     write_command(transport, f"SET:T:{ch}:{requested}", expects_ack=expects_ack)
     actual = read_sensor_type(transport, ch)
     if actual != requested:

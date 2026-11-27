@@ -647,8 +647,9 @@ class KelvinionController(SystemInstrument):
                     ch,
                 )
             if "sensor_type" in raw_spec:
-                sensor_type = str(raw_spec["sensor_type"]).strip().upper()
-                if sensor_type not in protocol.SENSOR_TYPES:
+                raw_sensor_type = str(raw_spec["sensor_type"]).strip().upper()
+                sensor_type = protocol.SENSOR_TYPE_ALIASES.get(raw_sensor_type)
+                if sensor_type is None:
                     raise InstrumentError(
                         f"Input {ch} sensor_type must be one of {', '.join(protocol.SENSOR_TYPES)}",
                         "KELVINION_INVALID_SETUP",

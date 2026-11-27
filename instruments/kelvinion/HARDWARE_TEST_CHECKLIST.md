@@ -1,12 +1,13 @@
 # Kelvinion 驱动真机待测试文档（Hardware Verification Checklist）
 
 > **适用版本**：`kelvinion 0.1.0.dev1`（基于手册《Kelvinion User's Manual Rev 3.1.1》编写）
-> **当前进展（2026-11-27）**：已在标准 Kelvinion（S/N `1005`，固件 `V2.2.6b6`，USB CH343 `COM6 / ASRL6::INSTR`，`115200 8N1` 无流控，读写 `\r\n`）完成两轮空载真机测试：
+> **当前进展（2026-11-27）**：已在标准 Kelvinion（S/N `1005`，固件 `V2.2.6b6`，USB CH343 `COM6 / ASRL6::INSTR`，`115200 8N1` 无流控，读写 `\r\n`）完成三轮空载真机测试：
 > 1. **空载串口协议初测**：完成只读与部分空载写入协议验证（2360 条连续查询零错位，中位 ~3.0 ms，最大 14.3 ms）；
-> 2. **端到端只读验收（19:30–19:34，PR #8 `8a8f026` + 主框架 `main 2d58579 / 0.20.10`，只读传输包装，零写命令）**：完成 Scanner 独立配置、20 轮 `read_status`/`read_setup` 连续测试（2133 条 / 59 种命令，零超时/解码错/错位，中位 3.31 ms，最大 13.48 ms）、Instrument Setup 三页只读加载、真实 `RuntimeService` + 仪表子进程 `10 s Wait` 运行与归档，以及正常退出后 59 条全量回读与初始快照完全一致。
-> **仍待真机验证**：有负载闭环控温与爬坡（`HV-03`）、`RAMP=0` 真实爬坡行为与极限（`HV-04`）、启用传感器（非 `OFF`）后的物理断路/短路（`HV-05`）、Zone 置 `ON` 与 Range 联动（`HV-07`）、完整曲线号规则与 `INPUT_LIMIT` 变化原因（`HV-08`）、`[SET:SAVE]` 耗时/ACK/持久化（`HV-01`/`HV-08`）、阶段三双回路设温/`Hold`/`Manual` 拒写/Setup `Apply`/`Save` 真机写入，以及人工实体前面板逐项核对与有负载故障演练。
-> **已按实测修复的兼容问题**：① `[READ:T:CH]` 空通道返回 `[OFF]`（已纳入 `SENSOR_TYPES`）；② `[READ:W:A]=104`、`[READ:W:B]=412`（`read_curve_number` 改为接受任意非负整数，UI SpinBox 扩展至 `0–9999` 且绝不改写未动通道）。
-> **现场注意点**：初测时对空闲输入 C 执行曲线切换 `0 -> 12 -> 0` 后，其 `INPUT_LIMIT` 从 `800 K` 变为 `360 K`（前面板同步显示 `360 K`，后续只读验收复读仍为 `360 K`），原因与恢复方式尚未确认；测试曲线切换时务必留意 `INPUT_LIMIT` 变化，未确认前勿执行 `[SET:SAVE]`。
+> 2. **端到端只读验收（19:30–19:34，PR #8 `8a8f026` + 主框架 `main 2d58579 / 0.20.10`，只读传输包装，零写命令）**：完成 Scanner 独立配置、20 轮 `read_status`/`read_setup` 连续测试（2133 条 / 59 种命令，零超时/解码错/错位，中位 3.31 ms，最大 13.48 ms）、Instrument Setup 三页只读加载、真实 `RuntimeService` + 仪表子进程 `10 s Wait` 运行与归档，以及正常退出后 59 条全量回读与初始快照完全一致；
+> 3. **空载底层协议补测（19:46–19:51，直接 PyVISA，零 OpenLab、零 `[SET:SAVE]`、前后 59 条快照 0 差异）**：实测确认 Output A `Zone5` `KP/KI/KD` 读写、Output B `PID Limit`（`325 -> 320 -> 325 K`）读写、空闲通道 `H` 全部 6 种传感器类型（`CERNOX/PT100/PT1000/DIODE/RO105/OFF`）写入与开路读数（`W:H=0` 下均返回 `[0.000000]`，且 `W:H`/`INPUT_LIMIT:H` 不变）；全部 14 条写命令均无 ACK。因 Output B 全部 `Zone1–5`（及 A `Zone2–4`）预存非 `OFF` 量程，为安全起见跳过 `[SET:ZONE:B:ON]`。
+> **仍待真机验证**：有负载闭环控温与爬坡（`HV-03`）、`RAMP=0` 真实爬坡行为与极限（`HV-04`）、带校准曲线（`W != 0`）的物理断路与短路（`HV-05`）、Zone 置 `ON` 与 Range 联动（`HV-07`）、完整曲线号规则与 `INPUT_LIMIT` 变化原因（`HV-08`）、`[SET:SAVE]` 耗时/ACK/持久化（`HV-01`/`HV-08`）、阶段三双回路设温/`Hold`/`Manual` 拒写/Setup `Apply`/`Save` 真机写入，以及人工实体前面板逐项核对与有负载故障演练。
+> **已按实测修复的兼容问题**：① `[READ:T:CH]` 空通道返回 `[OFF]`（已纳入 `SENSOR_TYPES`，且实测 `[SET:T:H:OFF]` 可写）；② `[READ:W:A]=104`、`[READ:W:B]=412`（`read_curve_number` 改为接受任意非负整数，UI SpinBox 扩展至 `0–9999` 且绝不改写未动通道）；③ **传感器类型回读别名不对称**：实测 `[SET:T:H:CERNOX]` 回读为 `[NTCRTD]`、`[SET:T:H:RO105]` 回读为 `[RO]`，已在 `read_sensor_type` / `write_sensor_type_and_verify` 加入别名归一化（`NTCRTD -> CERNOX`、`RO -> RO105`）。
+> **现场注意点**：初测时对空闲输入 C 执行曲线切换 `0 -> 12 -> 0` 后，其 `INPUT_LIMIT` 从 `800 K` 变为 `360 K`（前面板同步显示 `360 K`，后续复读仍为 `360 K`）；而补测中对 `H` 仅切换传感器类型 `T:H` 并未改变 `INPUT_LIMIT:H`（始终 `800 K`）。测试曲线切换时务必留意 `INPUT_LIMIT` 变化，未确认前勿执行 `[SET:SAVE]`。
 
 ---
 
@@ -14,14 +15,14 @@
 
 | 编号 | 待确认问题 | 2026-11-27 空载实测结果（V2.2.6b6） | 仍待验证的边界 | 源码标记位置 |
 | --- | --- | --- | --- | --- |
-| **HV-01** | `[SET:...]` 是否返回 ACK 回执帧 | 已测 `[SET:RAMP]`（及 `SETP`/`LOOP`/`ZONE`/`W`）500 ms 内**无 ACK**，紧跟查询无帧错位（`write_expects_ack = false` 正常） | 尚未验证 `[SET:SAVE]` 等全部写命令是否均无 ACK | [`kelvinion.py`](kelvinion.py) `write_command`；[`instrument.toml`](instrument.toml) `write_expects_ack` |
+| **HV-01** | `[SET:...]` 是否返回 ACK 回执帧 | 已测 `RAMP`/`SETP`/`LOOP`/`LIMIT`/`T`/`W`/`ZONE(KP,KI,KD,RANGE,BOUNDARY)` 均在 500 ms 内**无 ACK**，紧跟查询无帧错位（`write_expects_ack = false` 正常） | 尚未验证 `[SET:SAVE]` 及 `[SET:ZONE:CH:ON|OFF]` 是否同样无 ACK | [`kelvinion.py`](kelvinion.py) `write_command`；[`instrument.toml`](instrument.toml) `write_expects_ack` |
 | **HV-02** | `[SET:SETP:CH:VALUE]` 是否需要 `K` 后缀 | **已确认**：`[SET:SETP:A:2.00K]` 与 `[SET:SETP:B:3.00K]` 均接受并正确回读（`setpoint_unit_suffix = true` 可用） | 未测无 `K` 写法（无需切换） | [`kelvinion.py`](kelvinion.py) `format_setpoint_command`；[`instrument.toml`](instrument.toml) `setpoint_unit_suffix` |
 | **HV-03** | `[READ:SETP:CH]` 返回爬坡工作设定值还是最终目标 | Range=`OFF` 空载下写后 0/5/15/30 s 均立即读回最终目标（A=2、B=3，功率 0） | **有负载闭环有效爬坡时的行为未验证**，尚不能认定工作设定值跟踪算法已通过 | [`kelvinion.py`](kelvinion.py) `read_working_setpoint` / `write_setpoint_and_readback`；[`backend.py`](backend.py) `_evaluate_loop_motion` |
 | **HV-04** | `[SET:RAMP:CH:VALUE]` 边界与 `0` 行为 | A/B 均接受并回读 `0.10`、`10.00`、`0.00` K/min | 未确认 `0.00` 在真实爬坡中的物理含义及硬件真实极限；保持 `[0.1, 10.0]` 与 `hold()` 不发 `RAMP 0` | [`kelvinion.py`](kelvinion.py) `HARDWARE_MIN_RAMP_K_PER_MIN`；[`backend.py`](backend.py) `hold` / `_validate_rate_value` |
-| **HV-05** | 断开/短路探头时 `[READ:K:CH]` 线缆返回 | 空输入（类型 `OFF`）串口返回 `[0.000000]`（前面板显示 `O.L.`），只读验收确认驱动与归档均按缺失处理、不记 `0 K` | **传感器类型启用（非 `OFF`）后的物理断路/短路返回字串未验证** | [`kelvinion.py`](kelvinion.py) `INVALID_SENSOR_TOKENS` / `read_temperature_k` |
+| **HV-05** | 断开/短路探头时 `[READ:K:CH]` 线缆返回 | 空载开路下（`W=0`），`OFF` 及全部 5 种启用类型（`CERNOX/PT100/PT1000/DIODE/RO105`）均返回 `[0.000000]`，驱动均拦截为 `KelvinionSensorFault`/缺失 | **带校准曲线（`W != 0`）的物理断路与真实物理短路返回字串未验证** | [`kelvinion.py`](kelvinion.py) `INVALID_SENSOR_TOKENS` / `read_temperature_k` |
 | **HV-06** | `[READ/SET:LOOP:CH]` 在 `A–H` 与 `NULL`/`OFF` 的格式 | 协议读写已确认：A=`[A]`、B=`[B]`；B 切 `C`、`OFF`（回读 `[NULL]`）、`B` 均成功 | 实体前面板逐项人工核对尚未执行 | [`kelvinion.py`](kelvinion.py) `read_loop_binding` / `write_loop_binding_and_verify` |
-| **HV-07** | `ZONE` 读写格式及 Zone 开启时 `[READ:RANGE:CH]` 联动 | 两路 `STATE` 与全部 `Zone1–5` 读取解析通过；A `Zone5` 写 `RANGE LOW/OFF`、`BOUNDARY 2/0` 均成功并恢复 | **Zone 置 `ON` 后与 `[READ:RANGE:CH]` 的联动未验证** | [`kelvinion.py`](kelvinion.py) `read_zone_state` / `read_zone_entry` / `write_zone_field_and_verify` |
-| **HV-08** | USB `\r\n`、`*IDN?`、节拍、传感器类型、曲线号与 `[SET:SAVE]` | CRLF 可用、带框/裸 IDN 均正常；初测 2360 条与只读验收 2133 条连续查询均 0 错位；实测 `[READ:T:CH]=[OFF]`、`[READ:W:A/B]=104/412` | 曲线完整范围/编码、`INPUT_LIMIT` 随曲线变更规则、`[SET:T:CH:OFF]` 写入及 `[SET:SAVE]` 耗时/持久化未验证 | [`kelvinion.py`](kelvinion.py) `SENSOR_TYPES` / `read_curve_number` / `save_configuration` |
+| **HV-07** | `ZONE` 读写格式及 Zone 开启时 `[READ:RANGE:CH]` 联动 | 两路 `STATE` 与全部 `Zone1–5` 读取解析通过；A `Zone5` 全部 5 字段（`KP`/`KI`/`KD`/`RANGE`/`BOUNDARY`）读写均已验证并恢复 | **Zone 置 `ON` 后 `[READ:ZONE:STATE:CH]` 返回值及与 `[READ:RANGE:CH]` 的联动未验证**（因 B `Zone1–5` 预存 `HIGH`/`MED` 量程而跳过） | [`kelvinion.py`](kelvinion.py) `read_zone_state` / `read_zone_entry` / `write_zone_field_and_verify` |
+| **HV-08** | USB `\r\n`、`*IDN?`、节拍、传感器类型、曲线号与 `[SET:SAVE]` | CRLF、带框/裸 IDN、连续 2360+2133 条查询均正常；实测 `T` 写入 `OFF/PT100/PT1000/DIODE/CERNOX/RO105` 生效，且 **`CERNOX -> [NTCRTD]`、`RO105 -> [RO]`**；`LIMIT` 读写通过；曲线 `104/412` | 曲线完整范围/编码、`INPUT_LIMIT` 随曲线变更规则及 `[SET:SAVE]` 耗时/持久化未验证 | [`kelvinion.py`](kelvinion.py) `SENSOR_TYPE_ALIASES` / `read_sensor_type` / `read_curve_number` / `save_configuration` |
 
 ---
 
@@ -83,8 +84,8 @@ rm.close()
   - 实测原始响应：`[MultiFields Technologies,Kelvinion,1005,V2.2.6b6]`（`ASRL6::INSTR`，`115200 8N1`，无流控，CRLF）
 - [x] **HV-08b（扫描器 `*IDN?` 对比）**：2026-11-27 初测确认 `V2.2.6b6` 下带框 `[*IDN?]` 与裸 `*IDN?` 均有正常响应（其他固件版本仍建议保留 Scanner 手选 `ASRL` 兜底说明）。
 - **HV-05（空通道 / 断线读数）**：
-  - [x] **空输入（传感器类型 `OFF`）**：A–H 类型均为 `OFF`，串口 `[READ:K:A..H]` 均返回 `[0.000000]`（前面板显示 `O.L.`）；驱动与归档均按缺失处理，未当作有效 `0 K`（2026-11-27 19:30–19:34 验证）。
-  - [ ] **启用传感器（非 `OFF`）后的物理断路 / 短路读数**：尚未验证故障字串与 `KELVINION_SENSOR_FAULT` 触发。
+  - [x] **空输入与 `W=0` 开路读数**：`OFF` 及在空闲通道 `H`（`W:H=0`）上依次切 `CERNOX` / `PT100` / `PT1000` / `DIODE` / `RO105` 时，串口 `[READ:K:CH]` 均立即及 +1 s 返回 `[0.000000]`（驱动拦截为 `KelvinionSensorFault` / 缺失，不记 `0 K`；2026-11-27 19:30–19:51 验证）。
+  - [ ] **带校准曲线（`W != 0`）的物理断路与真实物理短路读数**：尚未验证故障字串与 `KELVINION_SENSOR_FAULT` 实机演练。
 - **HV-06a（LOOP 读取）**：
   - [x] **协议读取**：`[READ:LOOP:A]` -> `[A]`，`[READ:LOOP:B]` -> `[B]`（Output A -> Input A，Output B -> Input B，2026-11-27 两轮一致）。
   - [ ] **实体前面板逐项人工核对**：19:30–19:34 只读验收未逐项对照实体前面板，待人工核对。
@@ -116,8 +117,9 @@ rm.close()
 
 ### 5. 测试 `HV-06`、`HV-07`、`HV-08`（Setup 写入项，仅在空载/安全通道测试）
 - [x] **HV-06b（LOOP 切换）**：2026-11-27 初测 Output B 切 `C`、`OFF`（回读 `[NULL]`）、恢复 `B` 均成功，A 保持 `A`。
-- [x] **HV-07b（Zone 参数读写，`Zone=OFF`）**：2026-11-27 初测 A `Zone5` 写入 `RANGE LOW/OFF` 与 `BOUNDARY 2/0` 均生效并恢复。
-- [ ] **HV-07b（Zone 置 `ON` 与 Range 联动）**：开启 Zone 后 `[READ:RANGE:A]` 与 `[READ:ZONE:STATE:A]` 的联动行为尚未验证。
+- [x] **HV-07b（Zone 全部 5 字段与 PID Limit 读写，`Zone=OFF`）**：2026-11-27 初测 + 19:50 补测 Output A `Zone5` 写入 `RANGE LOW/OFF`、`BOUNDARY 2/0`、`KP 12.50`、`KI 3.25`、`KD 1.5` 均无 ACK、精确回读并恢复 `[0.000,0.000,0.000,0,0.000]`；Output B `[SET:LIMIT:B:320.00]` 读写并恢复 `[325.000000]` 通过。
+- [ ] **HV-07b（Zone 置 `ON` 与 Range 联动）**：因实机 Output B `Zone1–5` 预存 `HIGH`/`MED` 量程（且 A `Zone2–4` 预存 `HIGH`/`MED`/`LOW`），19:50 安全跳过 `[SET:ZONE:B:ON]`；开启 Zone 后 `[READ:ZONE:STATE:CH]` 返回值与 `[READ:RANGE:CH]` 联动尚未验证。
+- [x] **HV-08（传感器类型全量读写与回读别名确认）**：2026-11-27 19:50 空闲通道 `H` 实测 `[SET:T:H:CERNOX|PT100|PT1000|DIODE|RO105|OFF]` 全部无 ACK 生效，且 **`CERNOX` 回读 `[NTCRTD]`、`RO105` 回读 `[RO]`**，`W:H`（`0`）与 `INPUT_LIMIT:H`（`800`）均未变化（已在驱动加入别名归一化）。
 - [x] **HV-08d（现场曲线号读取与空闲通道写入）**：实机读到 `A=104`、`B=412`，空闲 C 写入曲线 `12` 并恢复 `0`（注：恢复后 C 的 `INPUT_LIMIT` 由 `800 K` 变为 `360 K`，前面板同步显示 `360 K`）。
 - [ ] **HV-08d（完整曲线编号含义与 `INPUT_LIMIT` 规则）**：完整曲线号范围/编码含义及 `INPUT_LIMIT` 变更与恢复方式尚未确认。
 - [ ] **HV-08e（`[SET:SAVE]`）**：`[SET:SAVE]` 耗时、ACK 行为及断电持久化尚未执行。
@@ -148,9 +150,10 @@ rm.close()
 
 ---
 
-## 六、2026-11-27 19:30–19:34 真机只读验收快照与后续待办
+## 六、2026-11-27 真机实测快照与后续待办
 
-- **测试环境**：`ASRL6::INSTR`（USB CH343，`115200 8N1`，无流控，CRLF），身份 `[MultiFields Technologies,Kelvinion,1005,V2.2.6b6]`；驱动 PR #8 `8a8f0264cc44b0978aacf93b96cc5896663313e5`（`0.1.0.dev1`）；主框架 `main 2d58579d55aab3effbb0bba1ab3966a51e4f9912`（`0.20.10`）；只读传输包装仅允许 `[*IDN?]` / `[READ:...]`，未发送任何 `SET` / `Apply` / `Hold` / `SET:SAVE`。
+- **只读验收环境（19:30–19:34）**：`ASRL6::INSTR`（USB CH343，`115200 8N1`，无流控，CRLF），身份 `[MultiFields Technologies,Kelvinion,1005,V2.2.6b6]`；驱动 PR #8 `8a8f0264cc44b0978aacf93b96cc5896663313e5`（`0.1.0.dev1`）；主框架 `main 2d58579d55aab3effbb0bba1ab3966a51e4f9912`（`0.20.10`）；只读传输包装仅允许 `[*IDN?]` / `[READ:...]`，未发送任何写命令。
+- **底层协议补测（19:46–19:51）**：直接 PyVISA（未启动 OpenLab Control，未发 `[SET:SAVE]`），发送 14 条写命令覆盖 `Zone5 KP/KI/KD`、`LIMIT:B` 及 `T:H` 全部 6 种类型，均 `ack=None`，测后恢复，**59 条前后全量快照 0 差异**。
 - **实机初始/结束一致快照**：
   - 输入 A–H：传感器类型全部 `OFF`，温度响应全部 `[0.000000]`（无有效测温）；
   - 曲线号：`A=104`，`B=412`，`C–H=0`；

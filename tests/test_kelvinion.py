@@ -970,6 +970,112 @@ class KelvinionDriverTests(unittest.TestCase):
         self.assertEqual(transport.writes, ["[SET:RANGE:A:LOW]"])
         ctrl.close()
 
+    def test_v2_2_6b6_asymmetric_sensor_type_readback_and_zone_limit_replay(self) -> None:
+        """Replay 2026-11-27 V2.2.6b6 protocol probe: CERNOX->NTCRTD, RO105->RO, Zone KP/KI/KD, PID Limit."""
+
+        app = QApplication.instance() or QApplication([])
+
+        class V226b6AsymmetricTransport(FakeKelvinionTransport):
+            def _apply_set(self, frame: str) -> str:
+                ack = super()._apply_set(frame)
+                parts = frame[1:-1].split(":")
+                if len(parts) == 4 and parts[0] == "SET" and parts[1] == "T":
+                    ch, sensor = parts[2], parts[3]
+                    if not self.setup_mismatch:
+                        wire_readback = {"CERNOX": "NTCRTD", "RO105": "RO"}.get(sensor, sensor)
+                        self.responses[f"[READ:T:{ch}]"] = f"[{wire_readback}]\r\n"
+                return ack
+
+        transport = V226b6AsymmetricTransport()
+        transport.responses["[*IDN?]"] = "[MultiFields Technologies,Kelvinion,1005,V2.2.6b6]\r\n"
+        transport.responses["[READ:T:A]"] = "[NTCRTD]\r\n"
+        transport.responses["[READ:T:B]"] = "[RO]\r\n"
+        transport.responses["[READ:T:H]"] = "[OFF]\r\n"
+        transport.responses["[READ:K:H]"] = "[0.000000]\r\n"
+        transport.responses["[READ:LIMIT:B]"] = "[325.000000]\r\n"
+        transport.responses["[READ:ZONE:ZONE5:A]"] = "[0.000,0.000,0.000,0,0.000]\r\n"
+
+        # Protocol-level write/readback confirms CERNOX<->NTCRTD, RO105<->RO, PT100, PT1000, DIODE, OFF.
+        for requested, expected_wire in (
+            ("CERNOX", "[NTCRTD]\r\n"),
+            ("PT100", "[PT100]\r\n"),
+            ("PT1000", "[PT1000]\r\n"),
+            ("DIODE", "[DIODE]\r\n"),
+            ("RO105", "[RO]\r\n"),
+            ("OFF", "[OFF]\r\n"),
+        ):
+            actual = kelvinion_proto.write_sensor_type_and_verify(
+                transport, "H", requested, expects_ack=False
+            )
+            self.assertEqual(actual, requested)
+            self.assertEqual(transport.responses["[READ:T:H]"], expected_wire)
+            with self.assertRaises(kelvinion_proto.KelvinionSensorFault):
+                kelvinion_proto.read_temperature_k(transport, "H")
+
+        # Alias input passed to write_sensor_type_and_verify still sends canonical SET token.
+        transport.writes.clear()
+        self.assertEqual(
+            kelvinion_proto.write_sensor_type_and_verify(transport, "H", "NTCRTD"),
+            "CERNOX",
+        )
+        self.assertEqual(transport.writes, ["[SET:T:H:CERNOX]"])
+        kelvinion_proto.write_sensor_type_and_verify(transport, "H", "OFF")
+
+        # Backend + SetupWidget normalize [NTCRTD]->CERNOX and [RO]->RO105 with zero spurious diffs.
+        ctrl = KelvinionController(_config(), transport_factory=lambda *a, **k: transport)
+        ctrl.open()
+        setup = ctrl.execute_action("read_setup")
+        self.assertEqual(setup["sensors"]["A"]["sensor_type"], "CERNOX")
+        self.assertEqual(setup["sensors"]["B"]["sensor_type"], "RO105")
+        self.assertEqual(setup["sensors"]["H"]["sensor_type"], "OFF")
+
+        class FakeUIAPI:
+            connected = True
+            editable = True
+
+            def call_action(self, action, payload, *, read_only, on_result, on_error):
+                try:
+                    res = ctrl.execute_action(action, dict(payload))
+                except Exception as exc:
+                    on_error(str(exc))
+                else:
+                    on_result(res)
+
+        widget = SetupWidget(FakeUIAPI())
+        self.addCleanup(widget.close)
+        widget.on_activated()
+        app.processEvents()
+        self.assertEqual(widget._sensor_widgets["A"][0].currentText(), "CERNOX")
+        self.assertEqual(widget._sensor_widgets["B"][0].currentText(), "RO105")
+        self.assertFalse(widget.apply_button.isEnabled())
+
+        # Apply Sensor H->CERNOX, Output B PID Limit->320, Output A Zone5 KP/KI/KD.
+        transport.writes.clear()
+        widget._sensor_widgets["H"][0].setCurrentText("CERNOX")
+        widget._output_widgets["B"]["pid_limit_spin"].setValue(320.0)
+        zone5_table = widget._zone_tables["A"]
+        zone5_table.cellWidget(4, 2).setValue(12.50)
+        zone5_table.cellWidget(4, 3).setValue(3.25)
+        zone5_table.cellWidget(4, 4).setValue(1.5)
+        app.processEvents()
+        self.assertTrue(widget.apply_button.isEnabled())
+        widget.apply_changes()
+        app.processEvents()
+        self.assertFalse(widget.apply_button.isEnabled())
+        self.assertEqual(
+            transport.writes,
+            [
+                "[SET:T:H:CERNOX]",
+                "[SET:LIMIT:B:320.00]",
+                "[SET:ZONE:A:ZONE5:KP:12.50]",
+                "[SET:ZONE:A:ZONE5:KI:3.25]",
+                "[SET:ZONE:A:ZONE5:KD:1.5]",
+            ],
+        )
+        self.assertEqual(transport.responses["[READ:T:H]"], "[NTCRTD]\r\n")
+        self.assertEqual(widget._sensor_widgets["H"][0].currentText(), "CERNOX")
+        ctrl.close()
+
     def test_scanner_and_dual_loop_instrument_manager_integration(self) -> None:
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as directory:
