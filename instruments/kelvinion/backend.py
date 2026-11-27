@@ -272,6 +272,25 @@ class KelvinionController(SystemInstrument):
         """读取温度、两路输出状态与独立双回路控制状态（类似 Lake Shore 340）。"""
 
         transport = self._require_transport()
+        # 每次轮询先核对已启用控制端点的实际硬件 LOOP 绑定，防止 Setup 或前面板改绑后继续
+        # 把旧探头温度配对为该输出的有效控制状态或就绪判定。
+        for control_id, binding in self._control_bindings.items():
+            actual_input = self._call_read(
+                lambda out=binding.output: protocol.read_loop_binding(transport, out),
+                context=f"READ:LOOP:{binding.output}",
+            )
+            if actual_input != binding.input_channel:
+                self._active_ramps.pop(control_id, None)
+                self._last_observed_setpoints.pop(control_id, None)
+                raise SafetyViolation(
+                    f"{control_id} (Output {binding.output}) is bound to Input "
+                    f"{actual_input!r} on the instrument, expected Input "
+                    f"{binding.input_channel!r}; restore Output {binding.output} Loop "
+                    "binding or update Scanner configuration and reconnect",
+                    "KELVINION_LOOP_CONFIGURATION_MISMATCH",
+                    binding.output,
+                )
+
         temperatures = self._read_temperatures(
             transport,
             channels=self._polled_inputs,
@@ -475,6 +494,15 @@ class KelvinionController(SystemInstrument):
         self._validate_target_value(binding, target)
         self._verify_output_ready_for_write(transport, binding, target)
 
+        before_setpoint = self._call_read(
+            lambda: protocol.read_working_setpoint(transport, binding.output),
+            context=f"READ:SETP:{binding.output}",
+        )
+        current_rate = self._call_read(
+            lambda: protocol.read_ramp_rate(transport, binding.output),
+            context=f"READ:RAMP:{binding.output}",
+        )
+
         # UNVERIFIED_PROTOCOL (HV-04): 手册 p.40 写爬坡率下限 0.1 K/min，尚不确定固件是否
         # 接受 [SET:RAMP:CH:0]。Hold 仅把目标写为当前新鲜温度即可停止继续爬坡，同时保持输出安全。
         try:
@@ -492,8 +520,15 @@ class KelvinionController(SystemInstrument):
                 f"SET:SETP:{binding.output}",
             ) from exc
 
-        self._active_ramps.pop(binding.control_id, None)
-        self._last_observed_setpoints[binding.control_id] = after_setpoint
+        # 若 [READ:SETP] 仍返回尚未到达的爬坡工作设定值，沿用同一目标与停滞跟踪器，
+        # 不得提前清空目标或误报 ready=True。
+        self._record_commanded_target(
+            binding.control_id,
+            commanded_target=target,
+            before_setpoint=before_setpoint,
+            after_setpoint=after_setpoint,
+            rate_k_per_min=current_rate,
+        )
 
     def execute_action(
         self,
@@ -828,10 +863,21 @@ class KelvinionController(SystemInstrument):
         for out, field, val in output_ops:
             try:
                 if field == "loop_input":
-                    protocol.write_loop_binding_and_verify(
+                    actual_loop = protocol.write_loop_binding_and_verify(
                         transport, out, val, expects_ack=self._write_expects_ack
                     )
-                    summary_parts.append(f"Out {out} Loop->{val}")
+                    control_id = _OUTPUT_TO_CONTROL[out]
+                    self._active_ramps.pop(control_id, None)
+                    self._last_observed_setpoints.pop(control_id, None)
+                    binding = self._control_bindings.get(control_id)
+                    if binding is not None and actual_loop != binding.input_channel:
+                        summary_parts.append(
+                            f"Out {out} Loop->{actual_loop} "
+                            f"(mismatch with Scanner Input {binding.input_channel}; "
+                            "update Scanner and reconnect)"
+                        )
+                    else:
+                        summary_parts.append(f"Out {out} Loop->{actual_loop}")
                 elif field == "heater_range":
                     protocol.write_heater_range_and_verify(
                         transport, out, val, expects_ack=self._write_expects_ack

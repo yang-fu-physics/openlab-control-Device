@@ -750,6 +750,133 @@ class KelvinionDriverTests(unittest.TestCase):
         self.assertEqual(st_held["auxiliary"]["loop_1_ramping"], "Idle")
         ctrl.close()
 
+    def test_loop_rebinding_via_setup_or_front_panel_blocks_stale_status(self) -> None:
+        """PR #8 P1 regression: rebinding Output A via Setup or front panel must never report stale Temp A."""
+
+        transport = FakeKelvinionTransport()
+        ctrl = KelvinionController(_config(), transport_factory=lambda *a, **k: transport)
+        ctrl.open()
+        initial = ctrl.read_status()
+        self.assertEqual(initial["value"], 10.0)
+        self.assertTrue(initial["ready"])
+
+        # Path 1: Rebind Output A -> Input B via supported Setup action.
+        setup_res = ctrl.execute_action(
+            "apply_setup",
+            {"outputs": {"A": {"loop_input": "B"}}},
+        )
+        self.assertIn("mismatch", str(setup_res["summary"]))
+        self.assertEqual(transport.responses["[READ:LOOP:A]"], "[B]\r\n")
+
+        with self.assertRaises(SafetyViolation) as status_err:
+            ctrl.read_status()
+        self.assertEqual(status_err.exception.code, "KELVINION_LOOP_CONFIGURATION_MISMATCH")
+
+        transport.writes.clear()
+        with self.assertRaises(SafetyViolation) as write_err:
+            ctrl.set_target(25.0, 1.0, control="output_1")
+        self.assertEqual(write_err.exception.code, "KELVINION_LOOP_CONFIGURATION_MISMATCH")
+        self.assertEqual(transport.writes, [])
+
+        # Restoring Loop A -> Input A via Setup restores valid status polling.
+        ctrl.execute_action("apply_setup", {"outputs": {"A": {"loop_input": "A"}}})
+        restored = ctrl.read_status()
+        self.assertEqual(restored["value"], 10.0)
+        self.assertTrue(restored["ready"])
+
+        # Path 2: Rebind Output A on physical front panel (to Input B or OFF/NULL).
+        for hardware_loop in ("[B]\r\n", "[NULL]\r\n"):
+            transport.responses["[READ:LOOP:A]"] = hardware_loop
+            with self.assertRaises(SafetyViolation) as fp_err:
+                ctrl.read_status()
+            self.assertEqual(fp_err.exception.code, "KELVINION_LOOP_CONFIGURATION_MISMATCH")
+
+        ctrl.close()
+
+    def test_hold_tracks_working_setpoint_until_arrival_or_stall(self) -> None:
+        """PR #8 P2 regression: hold() must retain its target while working setpoint has not arrived."""
+
+        now = [200.0]
+        transport = FakeKelvinionTransport(ramping_working_setpoint=True)
+        transport.responses["[READ:K:A]"] = "[10.000]\r\n"
+        transport.responses["[READ:SETP:A]"] = "[30.000]\r\n"
+        transport.responses["[READ:RAMP:A]"] = "[2.000]\r\n"
+
+        ctrl = KelvinionController(
+            _config(),
+            transport_factory=lambda *a, **k: transport,
+            clock=lambda: now[0],
+        )
+        ctrl.open()
+        ctrl.read_status()
+
+        # Sub-case A: Hold writes 10.00 K, immediate readback is still 30.00 K, then steps to 10.00 K.
+        ctrl.hold(control="output_1")
+        self.assertEqual(transport.writes, ["[SET:SETP:A:10.00K]"])
+
+        now[0] += 2.0
+        st_pending = ctrl.read_status()
+        self.assertEqual(st_pending["target"], 10.0)
+        self.assertTrue(st_pending["moving"])
+        self.assertFalse(st_pending["ready"])
+        self.assertEqual(st_pending["controls"]["output_1"], {"target": 10.0, "rate": 2.0, "moving": True, "ready": False})
+        self.assertEqual(st_pending["auxiliary"]["loop_1_setpoint"], 30.0)
+        self.assertEqual(st_pending["auxiliary"]["loop_1_ramping"], "Ramping")
+
+        now[0] += 2.0
+        transport.responses["[READ:SETP:A]"] = "[20.000]\r\n"
+        st_mid = ctrl.read_status()
+        self.assertEqual(st_mid["target"], 10.0)
+        self.assertTrue(st_mid["moving"])
+        self.assertFalse(st_mid["ready"])
+        self.assertEqual(st_mid["auxiliary"]["loop_1_ramping"], "Ramping")
+
+        now[0] += 2.0
+        transport.responses["[READ:SETP:A]"] = "[10.000]\r\n"
+        st_arrived = ctrl.read_status()
+        self.assertEqual(st_arrived["target"], 10.0)
+        self.assertFalse(st_arrived["moving"])
+        self.assertTrue(st_arrived["ready"])
+        self.assertEqual(st_arrived["auxiliary"]["loop_1_ramping"], "Idle")
+
+        # Sub-case B: Hold writes 10.00 K, working setpoint stays stuck at 30.00 K past stall timeout.
+        transport.responses["[READ:SETP:A]"] = "[30.000]\r\n"
+        ctrl.read_status()
+        ctrl.hold(control="output_1")
+
+        evaluator = StabilityEvaluator(
+            StabilityConfig(
+                tolerance=0.05,
+                max_slope_per_minute=0.05,
+                dwell_seconds=2.0,
+                timeout_seconds=10.0,
+                window_seconds=2.0,
+            )
+        )
+        evaluator.reset(10.0, now[0])
+
+        now[0] += 25.0
+        st_stalled = ctrl.read_status()
+        self.assertEqual(st_stalled["target"], 10.0)
+        self.assertFalse(st_stalled["moving"])
+        self.assertFalse(st_stalled["ready"])
+        self.assertEqual(st_stalled["auxiliary"]["loop_1_setpoint"], 30.0)
+        self.assertEqual(st_stalled["auxiliary"]["loop_1_ramping"], "Stalled")
+
+        # Even though actual Temp A == 10.0 K == target, ready=False must prevent false STABLE!
+        for _ in range(4):
+            now[0] += 1.0
+            st = ctrl.read_status()
+            res = evaluator.update(
+                float(st["value"]),
+                float(st["target"]),
+                now[0],
+                ready=bool(st["ready"]),
+                moving=bool(st["moving"]),
+            )
+            self.assertNotEqual(res.state, StabilityState.STABLE)
+        ctrl.close()
+
     def test_hv01_ack_and_hv02_unit_suffix_toggles(self) -> None:
         transport = FakeKelvinionTransport(
             ramping_working_setpoint=False,
