@@ -1,0 +1,56 @@
+# Reference template for Cryo-con 24C dual-loop linked control:
+#   - Primary control loop: Loop 2 (Sample, Input B), target = x
+#   - Linked control loop:  Loop 1 (Stage/Shield, Input A), target = f(x)
+#
+# NOT a universal default! Replace the PID gains in BOTH [[zones]] (Loop 2) and
+# [[linked_pid_zones]] (Loop 1) with values validated on your cryostat before use.
+
+# ---- Primary Loop (Loop 2, Sample / Input B) PID Zones ----
+[[zones]]
+temperature = 10.0
+p_gain = 0.1
+i_gain = 1.0
+d_gain = 0.0
+
+[[zones]]
+temperature = 100.0
+p_gain = 10.0
+i_gain = 20.0
+d_gain = 0.0
+
+[[zones]]
+temperature = 400.0
+p_gain = 25.0
+i_gain = 30.0
+d_gain = 0.0
+
+# ---- Linked Loop (Loop 1, Stage / Input A) PID Zones ----
+# Selected by Loop 1's own computed target temperature (<= temperature).
+[[linked_pid_zones]]
+temperature = 10.0
+p_gain = 0.1
+i_gain = 1.0
+d_gain = 0.0
+
+[[linked_pid_zones]]
+temperature = 100.0
+p_gain = 15.0
+i_gain = 25.0
+d_gain = 0.0
+
+[[linked_pid_zones]]
+temperature = 320.0
+p_gain = 40.0
+i_gain = 40.0
+d_gain = 0.0
+
+# ---- Linked Loop Piecewise Target Formulas (indexed by primary target x) ----
+# x <= 310.0 K -> Loop 1 = x - 0.5 (keep positive above 0 K; use max(2.0, x - 0.5) if clamping)
+[[linked_target_zones]]
+temperature = 310.0
+formula = "x - 0.5"
+
+# x > 310.0 K (310.0 < x <= 400.0 K) -> Loop 1 fixed at 290 K
+[[linked_target_zones]]
+temperature = 400.0
+formula = "290"

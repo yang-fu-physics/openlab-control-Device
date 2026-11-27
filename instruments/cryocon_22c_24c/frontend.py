@@ -1,4 +1,4 @@
-"""Cryo-con 22C/24C 的 Instrument Setup 界面：传感器曲线与软件侧 PID 表切换。"""
+"""Cryo-con 22C/24C 的 Instrument Setup 界面：传感器曲线、软件侧 PID 表与 24C 联动公式预览。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 
 class SetupWidget(QWidget):
-    """按需查询并切换 Cryo-con 22C (A/B) 或 24C (A/B/C/D) 曲线及软件 PID 表。"""
+    """按需查询并切换 Cryo-con 22C (A/B) 或 24C (A/B/C/D) 曲线与软件 PID/联动表。"""
 
     def __init__(self, api: Any) -> None:
         super().__init__()
@@ -54,6 +54,21 @@ class SetupWidget(QWidget):
         self.pid_hint_label.setObjectName("mutedLabel")
         pid_layout.addRow(self.pid_hint_label)
         layout.addWidget(self.pid_group)
+
+        self.linked_group = QGroupBox("24C Linked Dual-Loop Formula Preview")
+        linked_layout = QFormLayout(self.linked_group)
+        self.linked_mapping_label = QLabel("—")
+        self.linked_mapping_label.setWordWrap(True)
+        self.linked_rules_label = QLabel("—")
+        self.linked_rules_label.setWordWrap(True)
+        self.linked_checkpoints_label = QLabel("—")
+        self.linked_checkpoints_label.setWordWrap(True)
+        self.linked_checkpoints_label.setObjectName("mutedLabel")
+        linked_layout.addRow("Loop mapping", self.linked_mapping_label)
+        linked_layout.addRow("Piecewise rules", self.linked_rules_label)
+        linked_layout.addRow("Checkpoints", self.linked_checkpoints_label)
+        self.linked_group.setVisible(False)
+        layout.addWidget(self.linked_group)
 
         self.status_label = QLabel("Click Refresh to read current settings from the controller.")
         self.status_label.setWordWrap(True)
@@ -189,6 +204,7 @@ class SetupWidget(QWidget):
             mode_combo.blockSignals(False)
             index_spin.blockSignals(False)
 
+        linked_enabled = bool(data.get("linked_loop_enabled", False))
         self._current_pid_file = str(data.get("current_pid_file", ""))
         self.pid_combo.blockSignals(True)
         self.pid_combo.clear()
@@ -204,11 +220,14 @@ class SetupWidget(QWidget):
                 continue
             zones = entry.get("zone_count", 0)
             max_temp = entry.get("max_temperature")
-            detail = (
-                f"{name} ({zones} zones, <= {max_temp:g} K)"
-                if isinstance(max_temp, (int, float))
-                else name
-            )
+            if linked_enabled:
+                l_pid = entry.get("linked_pid_zone_count", 0)
+                l_tgt = entry.get("linked_target_zone_count", 0)
+                detail = f"{name} (Primary {zones}, Linked PID {l_pid}, Formula {l_tgt})"
+            elif isinstance(max_temp, (int, float)):
+                detail = f"{name} ({zones} zones, <= {max_temp:g} K)"
+            else:
+                detail = name
             self.pid_combo.addItem(detail, name)
             if name == self._current_pid_file:
                 selected_index = self.pid_combo.count() - 1
@@ -222,6 +241,46 @@ class SetupWidget(QWidget):
         if invalid_names:
             hint += f" Skipped invalid/empty files: {', '.join(invalid_names)}."
         self.pid_hint_label.setText(hint)
+
+        self.linked_group.setVisible(linked_enabled)
+        if linked_enabled:
+            p_loop = data.get("primary_loop", 2)
+            p_in = data.get("primary_input", "B")
+            l_loop = data.get("linked_loop", 1)
+            l_in = data.get("linked_input", "A")
+            self.linked_mapping_label.setText(
+                f"Primary: Loop {p_loop} (Input {p_in})  |  Linked: Loop {l_loop} (Input {l_in})"
+            )
+            zones_data = data.get("linked_target_zones", [])
+            if isinstance(zones_data, list) and zones_data:
+                lines = []
+                prev_temp: float | None = None
+                for item in zones_data:
+                    if not isinstance(item, dict):
+                        continue
+                    upper = float(item.get("temperature", 0.0))
+                    formula = str(item.get("formula", ""))
+                    if prev_temp is None:
+                        lines.append(f"x <= {upper:g} K  ->  {formula}")
+                    else:
+                        lines.append(f"{prev_temp:g} K < x <= {upper:g} K  ->  {formula}")
+                    prev_temp = upper
+                self.linked_rules_label.setText("\n".join(lines))
+            else:
+                self.linked_rules_label.setText("—")
+            preview_data = data.get("linked_preview", [])
+            if isinstance(preview_data, list) and preview_data:
+                checkpoints = ", ".join(
+                    f"{item['primary_k']:g}->{item['linked_k']:g} K"
+                    for item in preview_data
+                    if isinstance(item, dict)
+                    and "primary_k" in item
+                    and "linked_k" in item
+                )
+                self.linked_checkpoints_label.setText(checkpoints)
+            else:
+                self.linked_checkpoints_label.setText("—")
+
         self._loaded = True
 
     def _build_apply_payload(self) -> dict[str, Any]:

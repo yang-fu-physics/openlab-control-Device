@@ -1,10 +1,16 @@
 # Cryo-con 22C / 24C
 
-- **驱动版本**：`0.3.1.dev2`
-- **实机验证状态**：Cryo-con `22C` 已完成现场读写与升温响应验证（`2026-11-22`，仅覆盖已测接线与配置）；`24C` 尚未实机验证。
+- **驱动版本**：`0.4.0.dev1`
+- **实机验证状态**：Cryo-con `22C` 单回路已完成现场读写与升温响应验证（`2026-11-22`，仅覆盖已测接线与配置）；`24C` 双回路联动模式**尚未实机验证**。
 
-一个物理实例共用一个 VISA 会话，只控制 Loop 1。主温度可选 Temp A 或 Temp B；
-默认 CH A 为主温度，CH B 为只读辅助温度。不查询或写入 Loop 2。
+一个物理实例共用一个 VISA 会话，支持两种模式：
+
+1. **单回路模式（默认，22C / 24C 通用）**：`linked_loop_enabled = false`，仅控制 `primary_loop`（默认 `Loop 1`），主温度可选 `Temp A` 或 `Temp B`，不查询也不写入另一路。**22C 仅支持单回路 Loop 1**，若在 22C 上勾选双回路联控或选择 Loop 2，`open()` 识别到 `*IDN?` 为 `22C` 后会直接报安全错误拒绝连接。
+2. **24C 双回路分段公式联控（`linked_loop_enabled = true`）**：
+   - 例如将 `primary_loop` 设为 `2`、`Reading` 设为 `Temp B`（主控 Loop 2 控样品 B，目标 `x`），则从回路自动为 `Loop 1`（控 Input A，目标由分段公式计算）；
+   - 两路**分别下发各自的软件 PID 表**（主回路查 `[[zones]]`，从回路按其目标温度查 `[[linked_pid_zones]]`），且均逐项回读确认；
+   - `moving` 在**任一回路处于斜坡（ramping）**时为 `True`，只有**两路均停止爬坡**时才报 `ready = True` 进入稳态计时；
+   - `Hold Current` 会一次性现读 A/B 两个传感器即时温度并分别保持各自当前温度，**绝不套用联动公式**。
 
 USB 虚拟串口使用 `ASRL…::INSTR` 地址，8N1、LF 终止符，波特率必须与面板一致，
 可选 9600、19200、38400、57600、115200；同时保留 USB、LAN/TCP 和 GPIB VISA 地址支持。
@@ -12,49 +18,67 @@ USB 虚拟串口使用 `ASRL…::INSTR` 地址，8N1、LF 终止符，波特率�
 
 ## 配置
 
-把完整目录放入 System Instruments 目录，在 Instrument Scanner 中选择资源、
-波特率、Loop 1 主温度和监视读数。只有 Loop 1 已使用所选输入、处于 RAMPP 且
-CONTROL ON 时才允许控制；连接只读验证，不自动切换输入或开启加热。
+把完整目录放入 System Instruments 目录，在 Instrument Scanner 中选择资源、波特率、主回路（`1`/`2`）、是否启用 24C 双回路联控、主温度读数与监视面板。只有活动回路已绑定到对应输入（A/B）、处于 `RAMPP` 且 `CONTROL ON` 时才允许控制；连接只读验证，不自动切换输入或开启加热。
 
 每个物理实例使用自己的 `configs/pid/<instance-id>.toml`。
 `pid.example.toml` 是空模板，必须填入现场已经确认的参数，不能用测试夹具代替。
 
+### 1. 主回路 PID 表（22C/24C 必需）
+
 ```toml
 [[zones]]
-temperature = 10.0 # 包含等于的温区上限
+temperature = 10.0 # 包含等于（<=）的温区上限
 p_gain = 1.0
 i_gain = 4.0
 d_gain = 1.0
 # heater_range = "LOW" # 可选：LOW/MID/HI；不填写则保留仪表当前量程
 ```
 
-选取第一行满足目标温度 <= temperature 的 PID；例如恰好 3 K 使用 3 K 行，恰好 8 K 使用 8 K 行。
-温度边界必须严格递增，最后一行覆盖 controller 最大温度。P/I/D 必须为有限值且
-在远程命令的 0–1000 范围内。手册建议 D 不超过 I/4；软件保留现场确认的原值，
-不再以这个比例拒绝或钳位参数。空表、非法数值或非法量程仍快速失败。
+### 2. 24C 双回路联控表（仅 `linked_loop_enabled = true` 时必需，22C 禁用）
 
-### 可选现场参考表（`pid.operator-example.toml`）
+同一份 `configs/pid/<instance-id>.toml` 中额外配置**从回路 PID 表**与**分段目标公式**：
 
-目录内额外附带的 `pid.operator-example.toml` 保留了操作者提供的特定冷台参数（含 `100 K` 行的 `I=30 / D=30`）及低温段调整：`T <= 8 K` 使用 `P=0.1 / I=0.5 / D=0`，`8 < T <= 10 K` 使用 `P=0.1 / I=1 / D=0`，其余高温段保持原值；全表省略 `heater_range`（写温时保留仪表当前加热量程），温区上限覆盖至 `500 K`（实际允许目标仍受配置的 controller 上限约束，主温度为 A 时同时不得高于 `Temp A Maximum`）。
+```toml
+# 从回路（如 Loop 1）自身 PID 表：按从回路目标温度（<= temperature）选段
+[[linked_pid_zones]]
+temperature = 10.0
+p_gain = 0.1
+i_gain = 1.0
+d_gain = 0.0
+# heater_range = "LOW" # 可选
 
-该文件仅针对特定冷台，**不是通用默认整定表**；空模板 `pid.example.toml` 仍是默认入口，核对适用性后须显式选用：
+[[linked_pid_zones]]
+temperature = 320.0
+p_gain = 40.0
+i_gain = 40.0
+d_gain = 0.0
 
-- **首次或重新配置**：在 **Instrument Scanner** 中点击 **Choose PID File…** 选中 `pid.operator-example.toml`（保存时会自动复制到 `configs/pid/<instance-id>.toml`）；
-- **已有部署热切换**：先将该文件复制到 `configs/pid/` 目录，再在主程序 **Instrument → Instrument Setup…** 的软件 PID 表下拉框中选中并应用。
+# 从回路目标温度分段公式：按主目标 x（<= temperature）选段
+# 白名单语法仅支持：x、有限数值、括号、+ - * /、min()、max()
+[[linked_target_zones]]
+temperature = 310.0 # x <= 310.0 K 时生效
+formula = "x - 0.5"
+
+[[linked_target_zones]]
+temperature = 400.0 # x > 310.0 K（310.0 < x <= 400.0 K）时生效
+formula = "290"
+```
+
+- **上限规则统一为包含等于（`<=`）**：上例中 `x = 310.0 K` 命中第一段（`309.5 K`），`x > 310.0 K`（例如 `310.01 K`、`350 K`）命中第二段（恒为 `290 K`）。
+- **加载期安全抽检**：加载配置时会自动在上下限及各分段边界（含 `310 + 1e-6 K`）抽检公式结果，若出现非正值、除零、超出 `Temp A Maximum`（当从回路为 Input A 时）或超出 `[[linked_pid_zones]]` 最高温区，会在连接硬件前直接拦截。
+- **可选参考模板**：
+  - `pid.operator-example.toml`：特定 22C 冷台单回路参考表；
+  - `pid.24c-linked-example.toml`：24C 双回路联控（`x <= 310: x - 0.5`，`x > 310: 290`）结构示例，**内含示例 PID 增益，实机使用前务必替换为冷台实测整定值**。
 
 ## 读写与运行
 
-- 完整状态用复合查询读取 A/B、Loop 1、控制状态、加热回读和量程；使用固件支持的
-  `INPUT? A/B` 温度查询，斜坡状态支持 ON/OFF 和 YES/NO。
-- 实验测量行只查询所选主温度。辅助温度和加热读数在该行留空，不使用缓存冒充同步值；
-  完整状态仍写入 `instrument_status.dat`。
-- Set Temperature 按目标温度选择 PID 段，逐项写入并回读 P、I、D、可选量程、速率，
-  最后写入并回读目标。任一不匹配即报错，不自动重发。
-- Hold 用即时主温度作为目标，不关闭加热。断开和退出只关闭 VISA 会话。
-- A/B 传感器报警、Loop 1 加热故障、A 超过配置的 Temp A Maximum 均报错。
-  Temp A Maximum 始终限制物理输入 A，与主温度选择无关；主温度为 A 时，设温、Hold 与状态校验中的目标均不得高于 Temp A Maximum。
-- 通信失联沿核心重连机制处理；恢复后核对实际目标和速率。
-- **传感器曲线与软件 PID 表切换（Instrument Setup）**：通过主菜单 **Instrument → Instrument Setup…**（或右键点击底部温控卡片）按需打开独立窗口，不占用额外底部卡片也不在后台轮询。22C 支持切换 A/B、24C 支持切换 A/B/C/D 通道的出厂曲线（`ISENix`）或用户曲线（`USENix`），每次写入均回读确认；同时支持在 `configs/pid/` 目录内校验并切换软件侧 PID 表（自动持久化回 `configs/instruments/`，在下一次 `Set Temperature` / `Hold` 生效，不中断当前控温）。
+- 单回路完整状态用 15 字段复合查询；24C 联控模式用 23 字段单条复合查询同时读取 A/B、Loop 1、Loop 2 与 `CONTROL?`，并在可选的 **Linked Loop Status** 面板与 `instrument_status.dat` 中记录从回路设定值、功率、量程与斜坡状态。
+- 实验测量行只查询所选主温度。辅助温度和加热读数在该行留空，不使用缓存冒充同步值。
+- `Set Temperature`：
+  - 单回路：按目标选 PID 段，逐项写入并回读 P、I、D、可选量程、速率、目标；
+  - 24C 联控：写前完成两路目标计算、限值校验与两路 PID 选段，再先下发两路的 P/I/D/可选量程/速率，最后下发两路目标，**每一步均即时回读确认**；任一步失败立即报 `INSTRUMENT_WRITE_RESULT_UNKNOWN` 且不重发。
+- `Hold` 用即时传感器温度作为各自目标，不关闭加热；联控模式下一次复合查询 A/B 各自温度并分别下发各自 PID 与目标，不套公式。
+- A/B 传感器报警、任一活动回路加热故障、Input A 实际温度或目标超过 `Temp A Maximum` 均立即报安全错误。
+- **Instrument Setup**：支持 22C（A/B）与 24C（A/B/C/D）按需切换出厂/用户曲线及热切换 `configs/pid/` 下的软件配置表；24C 联控模式下会在弹窗内只读展示当前主从回路映射、分段公式与关键温度点换算预览。
 
-请保留冷台现场 PID 文件和硬件独立过温保护。该模块不提供磁场，辅助温度不要再创建
-第二个连接到同一物理地址的仪表实例。
+请保留冷台现场 PID 文件和硬件独立过温保护。该模块不提供磁场，辅助温度不要再创建第二个连接到同一物理地址的仪表实例。

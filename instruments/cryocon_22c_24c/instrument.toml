@@ -1,6 +1,6 @@
 id = "cryocon_22c_24c"
 name = "Cryo-con 22C / 24C Temperature Controller"
-version = "0.3.1.dev2"
+version = "0.4.0.dev1"
 api_version = "4"
 core_requires = ">=0.19,<0.21"
 backend = "backend:Cryocon22C24CController"
@@ -20,6 +20,19 @@ label = "Serial Baud Rate"
 type = "choice"
 default = "9600"
 options = ["9600", "19200", "38400", "57600", "115200"]
+
+[[config_fields]]
+id = "primary_loop"
+label = "Primary Control Loop"
+type = "choice"
+default = "1"
+options = ["1", "2"]
+
+[[config_fields]]
+id = "linked_loop_enabled"
+label = "Enable Dual-Loop Linked Control (24C Only)"
+type = "boolean"
+default = false
 
 [[config_fields]]
 id = "monitor_a_max_temperature"
@@ -43,7 +56,7 @@ default = "pid.example.toml"
 
 [[controls]]
 id = "loop_1"
-label = "Loop 1"
+label = "Main Temperature Control"
 
 [[panels]]
 id = "control"
@@ -68,6 +81,17 @@ label = "Temperature and Heater"
 template = "readout_grid"
 readings = ["temp_a", "temp_b", "heater_output", "heater_range"]
 
+[[panels]]
+id = "linked_monitor"
+label = "Linked Loop Status"
+template = "readout_grid"
+readings = [
+    "linked_setpoint",
+    "linked_heater_output",
+    "linked_heater_range",
+    "linked_ramping",
+]
+
 [discovery]
 identity_pattern = "(?i)cryo-?con.*(?:22c|24c)"
 
@@ -88,3 +112,19 @@ decimals = 2
 
 [readings.heater_range]
 label = "Heater Range"
+
+[readings.linked_setpoint]
+label = "Linked Setpoint"
+unit = "K"
+decimals = 3
+
+[readings.linked_heater_output]
+label = "Linked Heater Output"
+unit = "%FS"
+decimals = 2
+
+[readings.linked_heater_range]
+label = "Linked Heater Range"
+
+[readings.linked_ramping]
+label = "Linked Ramping"
