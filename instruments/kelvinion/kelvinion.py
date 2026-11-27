@@ -21,7 +21,8 @@ INPUT_CHANNELS_MINI: tuple[str, ...] = ("A", "B")
 OUTPUT_CHANNELS_STANDARD: tuple[str, ...] = ("A", "B")
 OUTPUT_CHANNELS_MINI: tuple[str, ...] = ("A",)
 
-SENSOR_TYPES: tuple[str, ...] = ("CERNOX", "PT100", "PT1000", "DIODE", "RO105")
+# 2026-11-27 空载实测（V2.2.6b6）确认未启用传感器通道 [READ:T:CH] 返回 [OFF]。
+SENSOR_TYPES: tuple[str, ...] = ("OFF", "CERNOX", "PT100", "PT1000", "DIODE", "RO105")
 HEATER_RANGES: tuple[str, ...] = ("OFF", "LOW", "MED", "HIGH")
 ZONE_NAMES: tuple[str, ...] = ("ZONE1", "ZONE2", "ZONE3", "ZONE4", "ZONE5")
 ALLOWED_BAUD_RATES: tuple[int, ...] = (115200, 9600, 19200, 38400, 57600)
@@ -29,12 +30,14 @@ ALLOWED_BAUD_RATES: tuple[int, ...] = (115200, 9600, 19200, 38400, 57600)
 # 硬件规格限值（Manual v3.1.1 Ch. 3 / Ch. 5）
 HARDWARE_MIN_SETPOINT_K = 0.0
 HARDWARE_MAX_SETPOINT_K = 999.0
-# UNVERIFIED_PROTOCOL (HV-04): 手册 p.40 写爬坡率 0.1–10 K/min（精度 0.01），但 p.110 截图出现 Ramp 0.00。
+# UNVERIFIED_PROTOCOL (HV-04): V2.2.6b6 空载实测 A/B 均接受 0.10、10.00 与 0.00；
+# 0.00 在闭环爬坡下的实际物理含义及真实硬件速率上下限尚未在有负载条件下验证。
 HARDWARE_MIN_RAMP_K_PER_MIN = 0.1
 HARDWARE_MAX_RAMP_K_PER_MIN = 10.0
-# UNVERIFIED_PROTOCOL (HV-08): 手册 p.35 写曲线 0–9，AppNote 03 (p.117) 写 MF00–MF99（0–99）。
+# UNVERIFIED_PROTOCOL (HV-08): 2026-11-27 V2.2.6b6 空载实测 [READ:W:A]=104、[READ:W:B]=412，
+# 说明真实固件存在 >99 的曲线编号；完整编号范围与编码含义尚待确认，read_curve_number 接受任意非负整数。
 MIN_CURVE_NUMBER = 0
-MAX_CURVE_NUMBER = 99
+MAX_CURVE_NUMBER = 9999
 
 ZONE_RANGE_FROM_CODE: dict[str, str] = {
     "0": "OFF",
@@ -554,7 +557,11 @@ def write_sensor_type_and_verify(
     *,
     expects_ack: bool = False,
 ) -> str:
-    """写入输入传感器类型 ``[SET:T:CH:VALUE]`` 并回读确认。"""
+    """写入输入传感器类型 ``[SET:T:CH:VALUE]`` 并回读确认。
+
+    UNVERIFIED_PROTOCOL (HV-08): 2026-11-27 V2.2.6b6 空载实测确认 ``[READ:T:CH]`` 返回 ``[OFF]``，
+    但 ``[SET:T:CH:OFF]`` 及各传感器类型的串口写入尚未在实机上验证。
+    """
 
     ch = _normalize_input_channel(channel)
     requested = str(sensor_type).strip().upper()
@@ -570,7 +577,7 @@ def write_sensor_type_and_verify(
 
 
 def read_curve_number(transport: KelvinionTransport, channel: str) -> int:
-    """查询输入通道校准曲线编号 ``[READ:W:CH]``（0–99）。"""
+    """查询输入通道校准曲线编号 ``[READ:W:CH]``（接受任意非负整数，兼容 V2.2.6b6 实测 104/412 等编号）。"""
 
     ch = _normalize_input_channel(channel)
     payload = query_command(transport, f"READ:W:{ch}")
@@ -580,9 +587,9 @@ def read_curve_number(transport: KelvinionTransport, channel: str) -> int:
         raise KelvinionProtocolError(
             f"Invalid [READ:W:{ch}] curve number: {payload!r}"
         ) from exc
-    if not MIN_CURVE_NUMBER <= curve <= MAX_CURVE_NUMBER:
+    if curve < MIN_CURVE_NUMBER:
         raise KelvinionProtocolError(
-            f"Input {ch} curve number {curve} is outside [{MIN_CURVE_NUMBER}, {MAX_CURVE_NUMBER}]"
+            f"Input {ch} curve number {curve} must be >= {MIN_CURVE_NUMBER}"
         )
     return curve
 

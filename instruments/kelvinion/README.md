@@ -1,8 +1,7 @@
 # MultiFields Kelvinion Temperature Controller
 
-> **实机验证状态：待真机验证（Beta）**
-> 本驱动依据《Kelvinion 控温仪用户手册 Rev 3.1.1》编写，尚未在真实硬件上完成通讯与控温测试。
-> 接入真实低温系统前，**请务必先按同目录 [`HARDWARE_TEST_CHECKLIST.md`](HARDWARE_TEST_CHECKLIST.md) 逐项完成真机验证**（编号 `HV-01`–`HV-08`，源码中亦以 `UNVERIFIED_PROTOCOL (HV-XX)` 标注）。
+> **实机验证状态：已完成空载串口协议初测（2026-11-27，标准 Kelvinion S/N 1005，固件 `V2.2.6b6`，USB CH343 `COM6 / ASRL6::INSTR`，115200 8N1 无流控，CRLF）；尚未完成有负载/闭环控温与 Setup 写入验证。**
+> 接入真实低温系统前，**请务必先按同目录 [`HARDWARE_TEST_CHECKLIST.md`](HARDWARE_TEST_CHECKLIST.md) 完成剩余有负载/闭环验证项**（源码未定项以 `UNVERIFIED_PROTOCOL (HV-XX)` 标注）。
 
 ## 功能范围与当前约定
 

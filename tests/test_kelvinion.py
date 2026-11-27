@@ -898,6 +898,78 @@ class KelvinionDriverTests(unittest.TestCase):
         self.assertIn("[SET:SAVE]", widget.status_label.text())
         ctrl.close()
 
+    def test_v2_2_6b6_no_load_hardware_capture_replay_for_setup_and_status(self) -> None:
+        """Replay real 2026-11-27 V2.2.6b6 no-load responses: [OFF] sensor types, 104/412 curves, [0.000000]."""
+
+        app = QApplication.instance() or QApplication([])
+        transport = FakeKelvinionTransport()
+        transport.responses["[*IDN?]"] = "[MultiFields Technologies,Kelvinion,1005,V2.2.6b6]\r\n"
+        for ch in ("A", "B", "C", "D", "E", "F", "G", "H"):
+            transport.responses[f"[READ:K:{ch}]"] = "[0.000000]\r\n"
+            transport.responses[f"[READ:T:{ch}]"] = "[OFF]\r\n"
+            transport.responses[f"[READ:W:{ch}]"] = "[0]\r\n"
+        transport.responses["[READ:W:A]"] = "[104]\r\n"
+        transport.responses["[READ:W:B]"] = "[412]\r\n"
+        transport.responses["[READ:INPUT_LIMIT:C]"] = "[800]\r\n"
+        for out in ("A", "B"):
+            transport.responses[f"[READ:RANGE:{out}]"] = "[OFF]\r\n"
+            transport.responses[f"[READ:ZONE:STATE:{out}]"] = "[OFF]\r\n"
+            transport.responses[f"[READ:POWER:{out}]"] = "[0]\r\n"
+            transport.responses[f"[READ:SETP:{out}]"] = "[0]\r\n"
+            transport.responses[f"[READ:RAMP:{out}]"] = "[5]\r\n"
+
+        # With role="none" (no-load monitoring), [0.000000] maps to None without crashing.
+        ctrl = KelvinionController(
+            _config(role_1="none", role_2="none"),
+            transport_factory=lambda *a, **k: transport,
+        )
+        ctrl.open()
+        status = ctrl.read_status()
+        self.assertIsNone(status["value"])
+        self.assertEqual(status["auxiliary"]["loop_1_range"], "OFF")
+        self.assertEqual(status["auxiliary"]["loop_1_setpoint"], 0.0)
+        self.assertEqual(status["auxiliary"]["loop_1_ramping"], "Idle")
+
+        # read_setup parses [OFF] sensor types and 104 / 412 curve numbers cleanly!
+        setup = ctrl.execute_action("read_setup")
+        self.assertEqual(setup["firmware"], "V2.2.6b6")
+        self.assertEqual(setup["sensors"]["A"]["sensor_type"], "OFF")
+        self.assertEqual(setup["sensors"]["A"]["curve"], 104)
+        self.assertEqual(setup["sensors"]["B"]["curve"], 412)
+        self.assertEqual(setup["sensors"]["C"]["input_limit_k"], 800.0)
+
+        # Real PySide6 SetupWidget preserves 104/412 without clamping or rewriting untouched channels.
+        class FakeUIAPI:
+            connected = True
+            editable = True
+
+            def call_action(self, action, payload, *, read_only, on_result, on_error):
+                try:
+                    res = ctrl.execute_action(action, dict(payload))
+                except Exception as exc:
+                    on_error(str(exc))
+                else:
+                    on_result(res)
+
+        widget = SetupWidget(FakeUIAPI())
+        self.addCleanup(widget.close)
+        widget.on_activated()
+        app.processEvents()
+        self.assertEqual(widget._sensor_widgets["A"][0].currentText(), "OFF")
+        self.assertEqual(widget._sensor_widgets["A"][1].value(), 104)
+        self.assertEqual(widget._sensor_widgets["B"][1].value(), 412)
+        self.assertFalse(widget.apply_button.isEnabled())
+
+        # Editing only Output A Range sends ONLY [SET:RANGE:A:LOW] — never touches curves 104/412!
+        transport.writes.clear()
+        widget._output_widgets["A"]["range_combo"].setCurrentText("LOW")
+        app.processEvents()
+        self.assertTrue(widget.apply_button.isEnabled())
+        widget.apply_changes()
+        app.processEvents()
+        self.assertEqual(transport.writes, ["[SET:RANGE:A:LOW]"])
+        ctrl.close()
+
     def test_scanner_and_dual_loop_instrument_manager_integration(self) -> None:
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as directory:

@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 
-_SENSOR_TYPES = ("CERNOX", "PT100", "PT1000", "DIODE", "RO105")
+_SENSOR_TYPES = ("OFF", "CERNOX", "PT100", "PT1000", "DIODE", "RO105")
 _HEATER_RANGES = ("OFF", "LOW", "MED", "HIGH")
 _ZONE_NAMES = ("ZONE1", "ZONE2", "ZONE3", "ZONE4", "ZONE5")
 
@@ -74,8 +74,9 @@ class SetupWidget(QWidget):
         self._sensors_grid.setVerticalSpacing(6)
         self._sensors_layout.addWidget(self._sensors_grid_host)
         curve_note = QLabel(
-            "Factory default curves: 0=Cernox, 1=PT100, 2=PT1000, 3=DT670 Diode "
-            "(user curves MF00-MF99; exact upper bound subject to HV-08 verification)."
+            "Real firmware (e.g. V2.2.6b6) can report curve IDs above 99 (such as 104 / 412); "
+            "untouched channels are never rewritten. Note: changing a channel's curve number may "
+            "immediately update its Curve Limit (INPUT_LIMIT) on the instrument."
         )
         curve_note.setWordWrap(True)
         curve_note.setObjectName("mutedLabel")
@@ -206,7 +207,7 @@ class SetupWidget(QWidget):
             lbl.setStyleSheet("font-weight: 600;")
             self._sensors_grid.addWidget(lbl, 0, col)
         curve_min = int(data.get("curve_min", 0))
-        curve_max = int(data.get("curve_max", 99))
+        curve_max = int(data.get("curve_max", 9999))
         sensor_types = list(data.get("sensor_types", _SENSOR_TYPES))
         for row, ch in enumerate(inputs, start=1):
             self._sensors_grid.addWidget(QLabel(f"Input {ch}"), row, 0)
@@ -339,10 +340,17 @@ class SetupWidget(QWidget):
             curve_spin.blockSignals(True)
             sensor_type = str(info.get("sensor_type", ""))
             idx = type_combo.findText(sensor_type)
+            if idx < 0 and sensor_type:
+                type_combo.addItem(sensor_type)
+                idx = type_combo.findText(sensor_type)
             if idx >= 0:
                 type_combo.setCurrentIndex(idx)
             curve_val = info.get("curve")
             if isinstance(curve_val, int):
+                if curve_val > curve_spin.maximum():
+                    curve_spin.setMaximum(curve_val)
+                if curve_val < curve_spin.minimum():
+                    curve_spin.setMinimum(curve_val)
                 curve_spin.setValue(curve_val)
             limit_val = info.get("input_limit_k")
             limit_label.setText(

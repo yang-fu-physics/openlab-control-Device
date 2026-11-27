@@ -1,23 +1,24 @@
 # Kelvinion 驱动真机待测试文档（Hardware Verification Checklist）
 
 > **适用版本**：`kelvinion 0.1.0.dev1`（基于手册《Kelvinion User's Manual Rev 3.1.1》编写）
-> **当前状态**：所有离线单元测试已通过；**以下 8 项协议与实机行为（`HV-01`–`HV-08`）尚未在真实仪机上验证**，在程序中均以 `UNVERIFIED_PROTOCOL (HV-XX)` 注释标记。
-> **安全原则**：先做纯只读串口探针测试（阶段一），确认全部帧格式后再做安全温度区间内的小幅写入与双回路联调（阶段二/三）。**全程请先在仪表面板设好合理的硬件 `PID Limit`，必要时先将 Heater Range 置为 `OFF` 或 `LOW` 进行空载/小功率协议验证。**
+> **当前进展（2026-11-27）**：已在标准 Kelvinion（S/N `1005`，固件 `V2.2.6b6`，USB CH343 `COM6 / ASRL6::INSTR`，`115200 8N1` 无流控，读写 `\r\n`）完成**空载只读与部分空载写入协议验证**（2360 条连续查询零错位，中位 3.0 ms，最大 14.3 ms）；**闭环控温、有负载爬坡、启用传感器后的断路/短路故障编码、Zone 开启与 Range 联动、Setup 写入与 `[SET:SAVE]` 仍待实机验证**。
+> **已按实测修复的兼容问题**：① `[READ:T:CH]` 空通道返回 `[OFF]`（已纳入 `SENSOR_TYPES`）；② `[READ:W:A]=104`、`[READ:W:B]=412`（`read_curve_number` 改为接受任意非负整数，UI SpinBox 扩展至 `0–9999` 且绝不改写未动通道）。
+> **现场注意点**：空闲输入 C 执行曲线切换 `0 -> 12 -> 0` 后，其 `INPUT_LIMIT` 从 `800 K` 变为 `360 K`（前面板同步显示 `360 K`），原因与恢复方式尚未确认；测试曲线切换时务必留意 `INPUT_LIMIT` 变化，未确认前勿执行 `[SET:SAVE]`。
 
 ---
 
 ## 一、待确认项总览（与源码标记一一对应）
 
-| 编号 | 待确认问题 | 当前程序默认假定 | 源码标记位置 | 若实机不符时的调整方式 |
+| 编号 | 待确认问题 | 2026-11-27 空载实测结果（V2.2.6b6） | 仍待验证的边界 | 源码标记位置 |
 | --- | --- | --- | --- | --- |
-| **HV-01** | `[SET:...]` 写命令是否返回回执帧（如 `[OK]` / `[SET ... OK]`） | 默认**无返回**（`write_expects_ack = false`），写后紧跟 `[READ:...]` 回读 | [`kelvinion.py`](kelvinion.py) `write_command`；[`instrument.toml`](instrument.toml) `write_expects_ack` | 若实机返回回执帧，直接在 Instrument Scanner 勾选 `SET Returns ACK Frame [HV-01]`，后续再将默认值改为 `true` |
-| **HV-02** | `[SET:SETP:CH:VALUE]` 末尾是否需要带单位后缀 `K`（手册 p.96 示例 `[SET:SETP:A:300K]`） | 默认**带 `K`**（`setpoint_unit_suffix = true`），发送 `[SET:SETP:A:300.00K]` | [`kelvinion.py`](kelvinion.py) `format_setpoint_command`；[`instrument.toml`](instrument.toml) `setpoint_unit_suffix` | 若实机拒收带 `K` 的设定值，直接在 Instrument Scanner 取消勾选 `Append 'K' Suffix on SET:SETP [HV-02]`，后续再将默认值改为 `false` |
-| **HV-03** | `[READ:SETP:CH]` 返回的是**爬坡中的工作设定值**还是**最终目标值** | 默认按**爬坡工作设定值**处理：写后回读不强制等于最终目标，由内部爬坡跟踪器推算 `moving`/`ready` 与 `loop_N_ramping` | [`kelvinion.py`](kelvinion.py) `read_working_setpoint` / `write_setpoint_and_readback`；[`backend.py`](backend.py) `_evaluate_loop_motion` | 若实机确认始终直接返回最终目标值：可收紧 `write_setpoint_and_readback` 做严格相等校验，并明确无法从 `SETP` 推导 `ramping` |
-| **HV-04** | `[SET:RAMP:CH:VALUE]` 的实际最小/最大速率及 `0` 的行为（p.40 写 `0.1–10 K/min`，p.110 截图出现 `0.00`） | `set_target` 限制在 `[0.1, 10.0]` K/min（0.01 精度）；`hold()` **不发送** `[SET:RAMP:CH:0]`，仅写入现读温度 | [`kelvinion.py`](kelvinion.py) `HARDWARE_MIN_RAMP_K_PER_MIN`；[`backend.py`](backend.py) `hold` / `_validate_rate_value` | 若实机支持更高/更低速率或 `RAMP 0` 关闭爬坡，据此更新上下限与 `hold()` 策略 |
-| **HV-05** | 探头断开/短路/未接线时 `[READ:K:CH]` 的确切线缆返回字符串 | 兼容 `0.000`、`<= 0`、`> 999` 及 `S/C`、`O/C`、`OL`、`ERR`、`NULL` 等非数值标记；关键控制通道抛 `SafetyViolation`，监视通道返 `None` | [`kelvinion.py`](kelvinion.py) `INVALID_SENSOR_TOKENS` / `read_temperature_k` | 把实机实际返回字串补入 `INVALID_SENSOR_TOKENS` 或调整阈值 |
-| **HV-06** | `[READ:LOOP:CH]` 与 `[SET:LOOP:CH:VALUE]` 在 A–H 通道与未绑定（`NULL`/`OFF`）时的确切格式（Table 9 与 p.97 存在印刷笔误） | 查 `[READ:LOOP:A]`/`[READ:LOOP:B]`，将 `NULL`/`OFF`/`NONE` 归一化为 `"OFF"`；写 `[SET:LOOP:A:A..H|OFF]` | [`kelvinion.py`](kelvinion.py) `read_loop_binding` / `write_loop_binding_and_verify` | 若实机返回不同标记（如 `CHA`、`0`）或通道绑定命令不同，更新解析与发送格式 |
-| **HV-07** | `ZONE` 模式查询与写入格式、以及 Zone 开启时 `[READ:RANGE:CH]` 的交互 | 查 `[READ:ZONE:STATE:CH]`（兼容 `OFF`/`1..5`/`ZONE1..5`）、`[READ:ZONE:ZONEk:CH]`（兼容 0–3 或文字枚举）；写 `[SET:ZONE:CH:ZONEk:RANGE:OFF\|LOW\|MED\|HIGH]` | [`kelvinion.py`](kelvinion.py) `read_zone_state` / `read_zone_entry` / `write_zone_field_and_verify` | 核对 `SET:ZONE` 是否需要 `CH`、以及 `RANGE` 字段接受文字还是 `0–3` 数字 |
-| **HV-08** | USB CH343 串口帧尾 `\r\n`、`[*IDN?]` vs `*IDN?`、连续查询节拍、曲线号上限（`0–9` 还是 `0–99`）及 `[SET:SAVE]` 耗时 | `115200 8N1` 无流控，读写终止符均为 `\r\n`；曲线号允许 `0–99`；无额外命令间延时 | [`kelvinion.py`](kelvinion.py) `PyVisaTransport` / `MAX_CURVE_NUMBER` / `save_configuration` | 若发 `\r\n` 报错则改 `write_termination=""`；若连续查询丢包则加最小命令间隔；按实机更新曲线上限或 `SAVE` 超时 |
+| **HV-01** | `[SET:...]` 是否返回 ACK 回执帧 | 已测 `[SET:RAMP]`（及 `SETP`/`LOOP`/`ZONE`/`W`）500 ms 内**无 ACK**，紧跟查询无帧错位（`write_expects_ack = false` 正常） | 尚未验证 `[SET:SAVE]` 等全部写命令是否均无 ACK | [`kelvinion.py`](kelvinion.py) `write_command`；[`instrument.toml`](instrument.toml) `write_expects_ack` |
+| **HV-02** | `[SET:SETP:CH:VALUE]` 是否需要 `K` 后缀 | **已确认**：`[SET:SETP:A:2.00K]` 与 `[SET:SETP:B:3.00K]` 均接受并正确回读（`setpoint_unit_suffix = true` 可用） | 未测无 `K` 写法（无需切换） | [`kelvinion.py`](kelvinion.py) `format_setpoint_command`；[`instrument.toml`](instrument.toml) `setpoint_unit_suffix` |
+| **HV-03** | `[READ:SETP:CH]` 返回爬坡工作设定值还是最终目标 | Range=`OFF` 空载下写后 0/5/15/30 s 均立即读回最终目标（A=2、B=3，功率 0） | **有负载闭环有效爬坡时的行为未验证**，尚不能认定工作设定值跟踪算法已通过 | [`kelvinion.py`](kelvinion.py) `read_working_setpoint` / `write_setpoint_and_readback`；[`backend.py`](backend.py) `_evaluate_loop_motion` |
+| **HV-04** | `[SET:RAMP:CH:VALUE]` 边界与 `0` 行为 | A/B 均接受并回读 `0.10`、`10.00`、`0.00` K/min | 未确认 `0.00` 在真实爬坡中的物理含义及硬件真实极限；保持 `[0.1, 10.0]` 与 `hold()` 不发 `RAMP 0` | [`kelvinion.py`](kelvinion.py) `HARDWARE_MIN_RAMP_K_PER_MIN`；[`backend.py`](backend.py) `hold` / `_validate_rate_value` |
+| **HV-05** | 断开/短路探头时 `[READ:K:CH]` 线缆返回 | 空输入（类型 `OFF`）串口返回 `[0.000000]`（前面板显示 `O.L.`），已由 `<= 0.0` 拦截为探头故障 | **传感器类型启用（非 `OFF`）后的物理断路/短路返回字串未验证** | [`kelvinion.py`](kelvinion.py) `INVALID_SENSOR_TOKENS` / `read_temperature_k` |
+| **HV-06** | `[READ/SET:LOOP:CH]` 在 `A–H` 与 `NULL`/`OFF` 的格式 | **已确认**：B 切 `C`、`OFF`、`B` 均成功，`OFF` 回读 `[NULL]`（与 `NULL -> OFF` 归一化一致） | 无（已空载验证） | [`kelvinion.py`](kelvinion.py) `read_loop_binding` / `write_loop_binding_and_verify` |
+| **HV-07** | `ZONE` 读写格式及 Zone 开启时 `[READ:RANGE:CH]` 联动 | 两路 `STATE` 与 `Zone1–5` 可读；A `Zone5` 写 `RANGE LOW/OFF`、`BOUNDARY 2/0` 均成功并恢复 | **Zone 置 `ON` 后与 `[READ:RANGE:CH]` 的联动未验证** | [`kelvinion.py`](kelvinion.py) `read_zone_state` / `read_zone_entry` / `write_zone_field_and_verify` |
+| **HV-08** | USB `\r\n`、`*IDN?`、节拍、传感器类型、曲线号与 `[SET:SAVE]` | CRLF 可用、带框/裸 IDN 均正常、2360 条串行查询 0 错位；实测 `[READ:T:CH]` 返回 `[OFF]`、`[READ:W:A/B]` 返回 `104`/`412` | 曲线完整范围/编码、`INPUT_LIMIT` 随曲线变更规则、`[SET:T:CH:OFF]` 写入及 `[SET:SAVE]` 耗时/持久化未验证 | [`kelvinion.py`](kelvinion.py) `SENSOR_TYPES` / `read_curve_number` / `save_configuration` |
 
 ---
 
