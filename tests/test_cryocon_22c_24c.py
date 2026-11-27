@@ -24,9 +24,64 @@ from labcontrol.package_support.loading import load_source_object  # noqa: E402
 from labcontrol.models import InstrumentKind  # noqa: E402
 from cryocon_22c_24c.backend import Cryocon22C24CController  # noqa: E402
 from cryocon_22c_24c.cryocon_22c_24c import (  # noqa: E402
+    DUAL_LOOP_STATUS_QUERY,
     MEASUREMENT_TEMPERATURE_QUERY,
     STATUS_QUERY,
+    TEMPERATURES_AB_QUERY,
 )
+
+
+def _dual_status(
+    *,
+    temperature_a: str = "295.0",
+    alarm_a: str = "--",
+    temperature_b: str = "295.5",
+    alarm_b: str = "--",
+    loop1_setpoint: str = "295.0",
+    loop1_rate: str = "1.0",
+    loop1_ramping: str = "OFF",
+    loop1_range: str = "MID",
+    loop1_output: str = "20.0",
+    loop1_error: str = "--Htr OK--",
+    loop1_type: str = "RAMPP",
+    loop1_source: str = "CHA",
+    loop2_setpoint: str = "295.5",
+    loop2_rate: str = "1.0",
+    loop2_ramping: str = "OFF",
+    loop2_range: str = "LOW",
+    loop2_output: str = "15.0",
+    loop2_error: str = "--Htr OK--",
+    loop2_type: str = "RAMPP",
+    loop2_source: str = "CHB",
+    control: str = "ON",
+) -> str:
+    return ";".join(
+        (
+            temperature_a,
+            "K",
+            alarm_a,
+            temperature_b,
+            "K",
+            alarm_b,
+            loop1_setpoint,
+            loop1_rate,
+            loop1_ramping,
+            loop1_range,
+            loop1_output,
+            loop1_error,
+            loop1_type,
+            loop1_source,
+            loop2_setpoint,
+            loop2_rate,
+            loop2_ramping,
+            loop2_range,
+            loop2_output,
+            loop2_error,
+            loop2_type,
+            loop2_source,
+            control,
+        )
+    )
 
 
 def _status(
@@ -70,15 +125,18 @@ class FakeTransport:
     def __init__(
         self,
         *,
-        model: str = "24C",
+        model: str = "22C",
         status: str | None = None,
         measurement_temperature: str = "6.125",
         mismatch_parameter: str = "",
     ) -> None:
         self.model = model
         self.status = _status() if status is None else status
+        self.dual_status = _dual_status()
+        self.temperatures_ab = "295.25;K;--;340.5;K;--"
         self.measurement_temperature = measurement_temperature
         self.mismatch_parameter = mismatch_parameter
+        self.mismatch_loop: int | None = None
         self.commands: list[str] = []
         self.closed = False
         self.channel_sensors: dict[str, tuple[int | None, int | None]] = {
@@ -94,6 +152,10 @@ class FakeTransport:
             return f"Cryo-con,{self.model},204683,1.01A"
         if command == STATUS_QUERY:
             return self.status
+        if command == DUAL_LOOP_STATUS_QUERY:
+            return self.dual_status
+        if command == TEMPERATURES_AB_QUERY:
+            return self.temperatures_ab
         if command == MEASUREMENT_TEMPERATURE_QUERY:
             return self.measurement_temperature
         if command == "INPUT? B;:INPUT B:UNITS?;ALARM?":
@@ -122,13 +184,18 @@ class FakeTransport:
             else:
                 self.channel_sensors[head] = (None, requested)
             return str(requested)
-        operation = command.removeprefix("LOOP 1:")
-        parameter = operation.split(" ", 1)[0]
-        if ";" in command and command.endswith(f";{parameter}?"):
-            requested = operation.split(" ", 1)[1].split(";", 1)[0]
-            if parameter == self.mismatch_parameter:
-                return "999"
-            return requested
+        for loop_num in (1, 2):
+            prefix = f"LOOP {loop_num}:"
+            if command.startswith(prefix):
+                operation = command.removeprefix(prefix)
+                parameter = operation.split(" ", 1)[0]
+                if ";" in command and command.endswith(f";{parameter}?"):
+                    requested = operation.split(" ", 1)[1].split(";", 1)[0]
+                    if parameter == self.mismatch_parameter and (
+                        self.mismatch_loop is None or self.mismatch_loop == loop_num
+                    ):
+                        return "999"
+                    return requested
         raise AssertionError(f"Unexpected command: {command}")
 
     def close(self) -> None:
@@ -200,17 +267,28 @@ class CryoconControllerTests(unittest.TestCase):
         )
 
     def test_connect_is_read_only_and_accepts_22c_or_24c(self) -> None:
-        for model in ("22C", "24C"):
-            with self.subTest(model=model):
-                transport = FakeTransport(model=model)
-                controller = self._controller(transport)
-                controller.open()
-                self.assertEqual(transport.commands, ["*IDN?", STATUS_QUERY])
-                controller.close()
-                self.assertTrue(transport.closed)
-                self.assertFalse(
-                    any("CONTROL " in item or "STOP" in item for item in transport.commands)
-                )
+        transport_22c = FakeTransport(model="22C")
+        controller_22c = self._controller(transport_22c)
+        controller_22c.open()
+        self.assertEqual(transport_22c.commands, ["*IDN?", STATUS_QUERY])
+        controller_22c.close()
+        self.assertTrue(transport_22c.closed)
+        self.assertFalse(
+            any("CONTROL " in item or "STOP" in item for item in transport_22c.commands)
+        )
+
+        transport_24c = FakeTransport(model="24C")
+        controller_24c = self._controller(
+            transport_24c,
+            config=self._linked_24c_config(),
+        )
+        controller_24c.open()
+        self.assertEqual(transport_24c.commands, ["*IDN?", DUAL_LOOP_STATUS_QUERY])
+        controller_24c.close()
+        self.assertTrue(transport_24c.closed)
+        self.assertFalse(
+            any("CONTROL " in item or "STOP" in item for item in transport_24c.commands)
+        )
 
     def test_core_loader_can_import_backend_with_relative_instrument_module(
         self,
@@ -560,19 +638,29 @@ class CryoconControllerTests(unittest.TestCase):
             pid_a = pid_dir / "rod_a.toml"
             pid_b = pid_dir / "rod_b.toml"
             pid_bad = pid_dir / "empty.toml"
+            linked_tail = (
+                "[[linked_pid_zones]]\ntemperature = 320.0\np_gain = 15.0\ni_gain = 20.0\nd_gain = 0.0\n"
+                '[[linked_target_zones]]\ntemperature = 310.0\nformula = "x - 0.5"\n'
+                '[[linked_target_zones]]\ntemperature = 400.0\nformula = "290"\n'
+            )
             pid_a.write_text(
-                "[[zones]]\ntemperature = 400.0\np_gain = 10.0\ni_gain = 20.0\nd_gain = 1.0\nheater_range = 'LOW'\n",
+                "[[zones]]\ntemperature = 400.0\np_gain = 10.0\ni_gain = 20.0\nd_gain = 1.0\nheater_range = 'LOW'\n"
+                + linked_tail,
                 encoding="utf-8",
             )
             pid_b.write_text(
-                "[[zones]]\ntemperature = 400.0\np_gain = 55.0\ni_gain = 12.0\nd_gain = 2.0\nheater_range = 'MID'\n",
+                "[[zones]]\ntemperature = 400.0\np_gain = 55.0\ni_gain = 12.0\nd_gain = 2.0\nheater_range = 'MID'\n"
+                + linked_tail,
                 encoding="utf-8",
             )
             pid_bad.write_text("zones = []\n", encoding="utf-8")
 
             # Model 24C exposes A, B, C, D and switches both curves and software PID table.
             transport_24c = FakeTransport(model="24C")
-            controller_24c = self._controller(transport_24c, config=_config(pid_file=pid_a))
+            controller_24c = self._controller(
+                transport_24c,
+                config=self._linked_24c_config(pid_file=pid_a),
+            )
             controller_24c.open()
 
             setup = controller_24c.execute_action("read_setup")
@@ -613,8 +701,8 @@ class CryoconControllerTests(unittest.TestCase):
             )
             transport_24c.commands.clear()
             controller_24c.set_target(100.0, 2.0, control="loop_1")
-            self.assertIn("LOOP 1:PGAIN 10;PGAIN?", transport_24c.commands)
-            self.assertIn("LOOP 1:RANGE LOW;RANGE?", transport_24c.commands)
+            self.assertIn("LOOP 2:PGAIN 10;PGAIN?", transport_24c.commands)
+            self.assertIn("LOOP 2:RANGE LOW;RANGE?", transport_24c.commands)
 
             retried = controller_24c.execute_action("apply_setup", {"pid_file": "rod_b.toml"})
             self.assertEqual(retried["config_updates"]["pid_file"], str(pid_b.resolve()))
@@ -630,8 +718,8 @@ class CryoconControllerTests(unittest.TestCase):
             )
             transport_24c.commands.clear()
             controller_24c.set_target(100.0, 2.0, control="loop_1")
-            self.assertIn("LOOP 1:PGAIN 55;PGAIN?", transport_24c.commands)
-            self.assertIn("LOOP 1:RANGE MID;RANGE?", transport_24c.commands)
+            self.assertIn("LOOP 2:PGAIN 55;PGAIN?", transport_24c.commands)
+            self.assertIn("LOOP 2:RANGE MID;RANGE?", transport_24c.commands)
 
             # Reject invalid/empty PID table and path traversal without mutating active table.
             with self.assertRaises(InstrumentError) as bad_pid:
@@ -643,7 +731,10 @@ class CryoconControllerTests(unittest.TestCase):
 
             # Readback mismatch raises INSTRUMENT_WRITE_RESULT_UNKNOWN.
             mismatch_transport = FakeTransport(model="24C", mismatch_parameter="USENIX")
-            mismatch_controller = self._controller(mismatch_transport, config=_config(pid_file=pid_a))
+            mismatch_controller = self._controller(
+                mismatch_transport,
+                config=self._linked_24c_config(pid_file=pid_a),
+            )
             mismatch_controller.open()
             with self.assertRaises(InstrumentError) as mismatch:
                 mismatch_controller.execute_action(
@@ -664,6 +755,408 @@ class CryoconControllerTests(unittest.TestCase):
                     {"channels": {"C": {"kind": "user", "index": 1}}},
                 )
             self.assertEqual(bad_ch.exception.code, "CRYOCON_INVALID_SETUP")
+
+    # ---- 24C Dual-Loop Linked Control (Piecewise Formulas + Dual PID) ----
+
+    def _linked_24c_config(
+        self,
+        *,
+        pid_file: Path | None = None,
+        main_reading: str = "temp_b",
+        operation_timeout_seconds: float = 30.0,
+    ):
+        resolved_pid = (
+            ROOT / "instruments" / "cryocon_22c_24c" / "pid.24c-linked-example.toml"
+            if pid_file is None
+            else pid_file
+        )
+        cfg = _config(
+            pid_file=resolved_pid,
+            auxiliary_readings=[
+                "temp_a",
+                "heater_output",
+                "heater_range",
+                "linked_setpoint",
+                "linked_heater_output",
+                "linked_heater_range",
+                "linked_ramping",
+            ],
+        )
+        cfg.main_reading = main_reading
+        cfg.operation_timeout_seconds = operation_timeout_seconds
+        cfg.extras["model"] = "24C"
+        return cfg
+
+    def test_model_switch_enforces_22c_single_loop_and_rejects_model_mismatch(self) -> None:
+        # Configured as 24C, connected to physical 22C -> rejected before any Loop 2 query.
+        transport = FakeTransport(model="22C")
+        controller = self._controller(transport, config=self._linked_24c_config())
+        with self.assertRaises(SafetyViolation) as caught:
+            controller.open()
+        self.assertEqual(caught.exception.code, "CRYOCON_22C_SINGLE_LOOP_ONLY")
+        self.assertTrue(transport.closed)
+        self.assertEqual(transport.commands, ["*IDN?"])
+
+        # Configured as 22C, connected to physical 24C -> rejected so Loop 1/2 cannot be left unlinked.
+        transport_24c = FakeTransport(model="24C")
+        with self.assertRaises(SafetyViolation) as mismatch:
+            self._controller(transport_24c, config=_config()).open()
+        self.assertEqual(mismatch.exception.code, "CRYOCON_MODEL_MISMATCH")
+        self.assertTrue(transport_24c.closed)
+
+        # Invalid model string fails at __init__.
+        bad_cfg = _config()
+        bad_cfg.extras["model"] = "32B"
+        with self.assertRaisesRegex(ValueError, "22C"):
+            self._controller(FakeTransport(model="22C"), config=bad_cfg)
+
+        # 22C config never queries Loop 2 even if linked_* auxiliary readings are listed.
+        cfg_22c = _config(
+            auxiliary_readings=["temp_a", "heater_output", "heater_range", "linked_setpoint", "linked_ramping"]
+        )
+        t_22c = FakeTransport(model="22C")
+        c_22c = self._controller(t_22c, config=cfg_22c)
+        c_22c.open()
+        st = c_22c.read_status()
+        self.assertIsNone(st["auxiliary"]["linked_setpoint"])
+        self.assertIsNone(st["auxiliary"]["linked_ramping"])
+        self.assertFalse(any("LOOP 2" in cmd for cmd in t_22c.commands))
+        c_22c.close()
+
+    def test_24c_linked_piecewise_formulas_dual_pid_and_boundary_at_310(self) -> None:
+        transport = FakeTransport(model="24C")
+        controller = self._controller(transport, config=self._linked_24c_config())
+        controller.open()
+        self.assertEqual(transport.commands, ["*IDN?", DUAL_LOOP_STATUS_QUERY])
+
+        # x = 10.0 K (<= 310): Loop 2 = 10.0 K (<=10 PID), Loop 1 = 9.5 K (<=10 PID).
+        transport.commands.clear()
+        controller.set_target(10.0, 1.5, control="loop_1")
+        self.assertEqual(
+            transport.commands,
+            [
+                "LOOP 2:PGAIN 0.1;PGAIN?",
+                "LOOP 2:IGAIN 1;IGAIN?",
+                "LOOP 2:DGAIN 0;DGAIN?",
+                "LOOP 2:RATE 1.5;RATE?",
+                "LOOP 1:PGAIN 0.1;PGAIN?",
+                "LOOP 1:IGAIN 1;IGAIN?",
+                "LOOP 1:DGAIN 0;DGAIN?",
+                "LOOP 1:RATE 1.5;RATE?",
+                "LOOP 1:SETPT 9.5;SETPT?",
+                "LOOP 2:SETPT 10;SETPT?",
+            ],
+        )
+
+        # x = 310.0 K (inclusive <= 310 -> x - 0.5 = 309.5 K, NOT 290).
+        transport.commands.clear()
+        controller.set_target(310.0, 2.0, control="loop_1")
+        self.assertEqual(transport.commands[:3], [
+            "LOOP 2:PGAIN 25;PGAIN?",
+            "LOOP 2:IGAIN 30;IGAIN?",
+            "LOOP 2:DGAIN 0;DGAIN?",
+        ])
+        self.assertEqual(transport.commands[4:7], [
+            "LOOP 1:PGAIN 40;PGAIN?",
+            "LOOP 1:IGAIN 40;IGAIN?",
+            "LOOP 1:DGAIN 0;DGAIN?",
+        ])
+        self.assertEqual(
+            transport.commands[-2:],
+            ["LOOP 1:SETPT 309.5;SETPT?", "LOOP 2:SETPT 310;SETPT?"],
+        )
+
+        # x = 310.01 K (strictly > 310 -> Loop 1 fixed at 290 K).
+        transport.commands.clear()
+        controller.set_target(310.01, 2.0, control="loop_1")
+        self.assertEqual(
+            transport.commands[-2:],
+            ["LOOP 1:SETPT 290;SETPT?", "LOOP 2:SETPT 310.01;SETPT?"],
+        )
+
+        # x = 350.0 K (> 310 -> Loop 1 fixed at 290 K, Loop 2 = 350 K).
+        transport.commands.clear()
+        controller.set_target(350.0, 2.0, control="loop_1")
+        self.assertEqual(
+            transport.commands[-2:],
+            ["LOOP 1:SETPT 290;SETPT?", "LOOP 2:SETPT 350;SETPT?"],
+        )
+        controller.close()
+
+    def test_24c_linked_ready_requires_both_loops_not_ramping_and_reports_metrics(self) -> None:
+        transport = FakeTransport(model="24C")
+        controller = self._controller(transport, config=self._linked_24c_config())
+        controller.open()
+
+        # Both OFF -> ready=True, moving=False.
+        st_idle = controller.read_status()
+        self.assertEqual(st_idle["value"], 295.5)
+        self.assertEqual(st_idle["target"], 295.5)
+        self.assertFalse(st_idle["moving"])
+        self.assertTrue(st_idle["ready"])
+        self.assertEqual(st_idle["auxiliary"]["temp_a"], 295.0)
+        self.assertEqual(st_idle["auxiliary"]["heater_output"], 15.0)
+        self.assertEqual(st_idle["auxiliary"]["heater_range"], "LOW")
+        self.assertEqual(st_idle["auxiliary"]["linked_setpoint"], 295.0)
+        self.assertEqual(st_idle["auxiliary"]["linked_heater_output"], 20.0)
+        self.assertEqual(st_idle["auxiliary"]["linked_heater_range"], "MID")
+        self.assertFalse(st_idle["auxiliary"]["linked_ramping"])
+
+        # Linked Loop 1 still ramping while primary Loop 2 finished -> moving=True, ready=False!
+        transport.dual_status = _dual_status(loop1_ramping="ON", loop2_ramping="OFF")
+        st_linked_moving = controller.read_status()
+        self.assertTrue(st_linked_moving["moving"])
+        self.assertFalse(st_linked_moving["ready"])
+        self.assertTrue(st_linked_moving["auxiliary"]["linked_ramping"])
+
+        # Primary Loop 2 ramping while linked Loop 1 finished -> moving=True, ready=False!
+        transport.dual_status = _dual_status(loop1_ramping="OFF", loop2_ramping="YES")
+        st_primary_moving = controller.read_status()
+        self.assertTrue(st_primary_moving["moving"])
+        self.assertFalse(st_primary_moving["ready"])
+        self.assertFalse(st_primary_moving["auxiliary"]["linked_ramping"])
+
+        # Linked loop fault (heater error or source mismatch or Temp A setpoint > max) fails immediately.
+        for bad_status, expected_code in (
+            (_dual_status(loop1_error="-Overtemp-"), "CRYOCON_HEATER_FAULT"),
+            (_dual_status(loop1_source="CHB"), "CRYOCON_CONFIGURATION_FAULT"),
+            (_dual_status(loop1_setpoint="325.0"), "CRYOCON_TARGET_LIMIT"),
+        ):
+            with self.subTest(code=expected_code):
+                transport.dual_status = bad_status
+                with self.assertRaises(SafetyViolation) as caught:
+                    controller.read_status()
+                self.assertEqual(caught.exception.code, expected_code)
+        controller.close()
+
+    def test_24c_linked_hold_uses_both_fresh_readings_without_formula(self) -> None:
+        transport = FakeTransport(model="24C")
+        transport.temperatures_ab = "295.25;K;--;340.5;K;--"
+        controller = self._controller(transport, config=self._linked_24c_config())
+        controller.open()
+        transport.commands.clear()
+
+        controller.hold(control="loop_1")
+        self.assertEqual(transport.commands[0], TEMPERATURES_AB_QUERY)
+        # Loop 1 holds at fresh 295.25 K (NOT 290 from formula!); Loop 2 holds at 340.5 K.
+        self.assertEqual(
+            transport.commands[-2:],
+            ["LOOP 1:SETPT 295.25;SETPT?", "LOOP 2:SETPT 340.5;SETPT?"],
+        )
+
+        # Hold rejects fresh Temp A above monitor_a_max_temperature before any write.
+        transport.temperatures_ab = "325.0;K;--;340.5;K;--"
+        transport.commands.clear()
+        with self.assertRaises(SafetyViolation) as err:
+            controller.hold(control="loop_1")
+        self.assertEqual(err.exception.code, "CRYOCON_INPUT_A_HIGH_LIMIT")
+        self.assertEqual(transport.commands, [TEMPERATURES_AB_QUERY])
+        controller.close()
+
+    def test_24c_linked_profile_validation_timeout_and_write_mismatch(self) -> None:
+        # Short operation timeout rejected for 13-command dual-loop Hold budget.
+        with self.assertRaises(InstrumentError) as timeout_err:
+            self._controller(
+                FakeTransport(model="24C"),
+                config=self._linked_24c_config(operation_timeout_seconds=13.5),
+            )
+        self.assertEqual(timeout_err.exception.code, "INSTRUMENT_IO_TIMEOUT_TOO_HIGH")
+
+        # Missing linked sections rejected when linked_loop_enabled=True.
+        with self.assertRaisesRegex(ValueError, "linked_pid_zones"):
+            self._controller(
+                FakeTransport(model="24C"),
+                config=self._linked_24c_config(pid_file=PID_FIXTURE),
+            )
+
+        with tempfile.TemporaryDirectory() as temp:
+            base_pid = (
+                "[[zones]]\ntemperature = 400.0\np_gain = 10.0\ni_gain = 10.0\nd_gain = 0.0\n"
+                "[[linked_pid_zones]]\ntemperature = 320.0\np_gain = 10.0\ni_gain = 10.0\nd_gain = 0.0\n"
+            )
+            bad_cases = (
+                ("unsafe_call", 'formula = "__import__(\'os\')"'),
+                ("unknown_var", 'formula = "y - 0.5"'),
+                ("power_op", 'formula = "x ** 2"'),
+                ("exceeds_temp_a_max", 'formula = "x - 0.5"'),  # at x=400 -> 399.5 > 320!
+                ("non_positive", 'formula = "x - 5.0"'),  # at x=2.0 -> -3.0 <= 0!
+                ("div_zero", 'formula = "100 / (x - 2.0)"'),
+            )
+            for label, formula_line in bad_cases:
+                with self.subTest(case=label):
+                    f = Path(temp) / f"{label}.toml"
+                    f.write_text(
+                        base_pid
+                        + f"[[linked_target_zones]]\ntemperature = 400.0\n{formula_line}\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(ValueError):
+                        self._controller(
+                            FakeTransport(model="24C"),
+                            config=self._linked_24c_config(pid_file=f),
+                        )
+
+            # Valid formula using min/max clamps cleanly.
+            good_f = Path(temp) / "clamped.toml"
+            good_f.write_text(
+                base_pid
+                + '[[linked_target_zones]]\ntemperature = 310.0\nformula = "max(2.0, x - 0.5)"\n'
+                + '[[linked_target_zones]]\ntemperature = 400.0\nformula = "min(290, x)"\n',
+                encoding="utf-8",
+            )
+            ctrl = self._controller(
+                FakeTransport(model="24C"),
+                config=self._linked_24c_config(pid_file=good_f),
+            )
+            self.assertEqual(ctrl._evaluate_linked_target(2.0), 2.0)
+            self.assertEqual(ctrl._evaluate_linked_target(310.0), 309.5)
+            self.assertEqual(ctrl._evaluate_linked_target(310.1), 290.0)
+
+        # Readback mismatch on Loop 1 during dual-loop write stops immediately without retry.
+        mismatch_transport = FakeTransport(model="24C", mismatch_parameter="PGAIN")
+        mismatch_transport.mismatch_loop = 1
+        ctrl_m = self._controller(mismatch_transport, config=self._linked_24c_config())
+        ctrl_m.open()
+        mismatch_transport.commands.clear()
+        with self.assertRaises(InstrumentError) as err:
+            ctrl_m.set_target(50.0, 2.0, control="loop_1")
+        self.assertEqual(err.exception.code, "INSTRUMENT_WRITE_RESULT_UNKNOWN")
+        self.assertFalse(any("SETPT" in cmd for cmd in mismatch_transport.commands))
+        ctrl_m.close()
+
+    def test_setup_widget_displays_24c_linked_formula_preview_and_hides_on_22c(self) -> None:
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from cryocon_22c_24c.frontend import SetupWidget
+
+        app = QApplication.instance() or QApplication([])
+
+        def make_widget(controller):
+            class FakeAPI:
+                connected = True
+                editable = True
+
+                def call_action(self, action, payload=None, *, read_only, on_result, on_error):
+                    try:
+                        res = controller.execute_action(action, dict(payload or {}))
+                    except Exception as exc:
+                        on_error(str(exc))
+                    else:
+                        on_result(res)
+
+            widget = SetupWidget(FakeAPI())
+            self.addCleanup(widget.close)
+            widget.on_activated()
+            app.processEvents()
+            return widget
+
+        # 24C linked mode: linked_group visible with piecewise rules and checkpoints.
+        ctrl_24c = self._controller(
+            FakeTransport(model="24C"),
+            config=self._linked_24c_config(),
+        )
+        ctrl_24c.open()
+        w_24c = make_widget(ctrl_24c)
+        self.assertFalse(w_24c.linked_group.isHidden())
+        self.assertIn("Loop 2 (Input B)", w_24c.linked_mapping_label.text())
+        self.assertIn("Loop 1 (Input A)", w_24c.linked_mapping_label.text())
+        self.assertIn("x - 0.5", w_24c.linked_rules_label.text())
+        self.assertIn("290", w_24c.linked_rules_label.text())
+        self.assertIn("310->309.5 K", w_24c.linked_checkpoints_label.text())
+        self.assertIn("310.1->290 K", w_24c.linked_checkpoints_label.text())
+        ctrl_24c.close()
+
+        # 22C single-loop mode: linked_group hidden.
+        ctrl_22c = self._controller(FakeTransport(model="22C"))
+        ctrl_22c.open()
+        w_22c = make_widget(ctrl_22c)
+        self.assertTrue(w_22c.linked_group.isHidden())
+        ctrl_22c.close()
+
+    def test_24c_hot_swap_primary_loop_verifies_hardware_source_before_control(self) -> None:
+        """PR #9 P1 regression: hot-swapping primary_loop must verify live hardware SOURCE before activating."""
+
+        with tempfile.TemporaryDirectory() as temp:
+            pid_dir = Path(temp)
+            linked_body = (
+                "[[zones]]\ntemperature = 400.0\np_gain = 10.0\ni_gain = 20.0\nd_gain = 1.0\n"
+                "[[linked_pid_zones]]\ntemperature = 320.0\np_gain = 15.0\ni_gain = 25.0\nd_gain = 0.0\n"
+                '[[linked_target_zones]]\ntemperature = 310.0\nformula = "x - 0.5"\n'
+                '[[linked_target_zones]]\ntemperature = 400.0\nformula = "290"\n'
+            )
+            pid_loop2 = pid_dir / "primary_loop2.toml"
+            pid_loop1 = pid_dir / "primary_loop1.toml"
+            pid_loop2.write_text("primary_loop = 2\n" + linked_body, encoding="utf-8")
+            pid_loop1.write_text("primary_loop = 1\n" + linked_body, encoding="utf-8")
+
+            # Hardware has Loop 1 -> CHA (Temp A max 320 K), Loop 2 -> CHB (Sample B).
+            transport = FakeTransport(model="24C")
+            transport.dual_status = _dual_status(loop1_source="CHA", loop2_source="CHB")
+            controller = self._controller(
+                transport,
+                config=self._linked_24c_config(pid_file=pid_loop2),
+            )
+            controller.open()
+            transport.commands.clear()
+
+            # 1) Attempting apply_setup to primary_loop=1 fails BEFORE staging or writing anything.
+            with self.assertRaises(SafetyViolation) as setup_err:
+                controller.execute_action("apply_setup", {"pid_file": "primary_loop1.toml"})
+            self.assertEqual(setup_err.exception.code, "CRYOCON_CONFIGURATION_FAULT")
+            self.assertEqual(controller._primary_loop, 2)
+            self.assertEqual(controller._pid_file, pid_loop2.resolve())
+            self.assertEqual(transport.commands, [DUAL_LOOP_STATUS_QUERY])
+
+            # 2) Direct apply_config_updates to primary_loop=1 is also rejected without mutating loops.
+            transport.commands.clear()
+            with self.assertRaises(SafetyViolation) as commit_err:
+                controller.apply_config_updates({"pid_file": str(pid_loop1)})
+            self.assertEqual(commit_err.exception.code, "CRYOCON_CONFIGURATION_FAULT")
+            self.assertEqual(controller._primary_loop, 2)
+            self.assertEqual(controller._linked_loop, 1)
+            self.assertEqual(controller._pid_file, pid_loop2.resolve())
+            self.assertEqual(transport.commands, [DUAL_LOOP_STATUS_QUERY])
+
+            # Immediate set_target(350 K) must STILL route 350 K to Loop 2 (CHB) and 290 K to Loop 1 (CHA).
+            transport.commands.clear()
+            controller.set_target(350.0, 2.0, control="loop_1")
+            self.assertEqual(
+                transport.commands[-2:],
+                ["LOOP 1:SETPT 290;SETPT?", "LOOP 2:SETPT 350;SETPT?"],
+            )
+
+            # 3) If hardware SOURCE actually matches primary_loop=1 (Loop 1->CHB, Loop 2->CHA),
+            # hot-swap succeeds and routes 350 K to Loop 1 (CHB) and 290 K to Loop 2 (CHA).
+            transport.dual_status = _dual_status(
+                loop1_source="CHB",
+                loop2_source="CHA",
+                loop1_setpoint="295.5",
+                loop2_setpoint="295.0",
+            )
+            applied = controller.execute_action("apply_setup", {"pid_file": "primary_loop1.toml"})
+            committed = controller.apply_config_updates(applied["config_updates"])
+            self.assertEqual(committed["primary_loop"], 1)
+            self.assertEqual(committed["linked_loop"], 2)
+            transport.commands.clear()
+            controller.set_target(350.0, 2.0, control="loop_1")
+            self.assertEqual(
+                transport.commands[-2:],
+                ["LOOP 2:SETPT 290;SETPT?", "LOOP 1:SETPT 350;SETPT?"],
+            )
+
+            # 4) A failed read_status() invalidates status and blocks set_target()/hold() without SETPT.
+            transport.dual_status = _dual_status(loop1_source="CHA", loop2_source="CHB")
+            with self.assertRaises(SafetyViolation) as poll_err:
+                controller.read_status()
+            self.assertEqual(poll_err.exception.code, "CRYOCON_CONFIGURATION_FAULT")
+            transport.commands.clear()
+            with self.assertRaises(InstrumentError) as blocked_err:
+                controller.set_target(350.0, 2.0, control="loop_1")
+            self.assertEqual(blocked_err.exception.code, "CRYOCON_STATUS_UNAVAILABLE")
+            self.assertEqual(transport.commands, [])
+            controller.close()
 
 
 if __name__ == "__main__":

@@ -71,8 +71,23 @@ class PyVisaTransport:
 
 
 @dataclass(frozen=True, slots=True)
+class LoopReadback:
+    """单个控制回路（Loop 1 或 Loop 2）的即时状态。"""
+
+    loop: int
+    setpoint: float
+    rate: float
+    ramping: str
+    heater_range: str
+    heater_output_percent: float
+    loop_error: str
+    loop_type: str
+    loop_source: str
+
+
+@dataclass(frozen=True, slots=True)
 class ControllerReadback:
-    """一次复合查询得到的完整控制和监视状态。"""
+    """单回路复合查询得到的完整控制和监视状态（默认兼容 22C Loop 1）。"""
 
     temperature_a: float
     unit_a: str
@@ -91,6 +106,28 @@ class ControllerReadback:
     control: str
 
 
+@dataclass(frozen=True, slots=True)
+class DualLoopReadback:
+    """24C 双回路联动模式下一次复合查询得到的 A/B 与 Loop 1/2 完整状态。"""
+
+    temperature_a: float
+    unit_a: str
+    alarm_a: str
+    temperature_b: float
+    unit_b: str
+    alarm_b: str
+    loop_1: LoopReadback
+    loop_2: LoopReadback
+    control: str
+
+    def loop(self, number: int) -> LoopReadback:
+        if number == 1:
+            return self.loop_1
+        if number == 2:
+            return self.loop_2
+        raise ValueError(f"Unsupported Cryo-con loop number: {number!r}")
+
+
 STATUS_QUERY = (
     "INPUT? A;:INPUT A:UNITS?;ALARM?;"
     ":INPUT? B;:INPUT B:UNITS?;ALARM?;"
@@ -98,7 +135,34 @@ STATUS_QUERY = (
     ":CONTROL?"
 )
 
+DUAL_LOOP_STATUS_QUERY = (
+    "INPUT? A;:INPUT A:UNITS?;ALARM?;"
+    ":INPUT? B;:INPUT B:UNITS?;ALARM?;"
+    ":LOOP 1:SETPT?;RATE?;RAMP?;RANGE?;HTRREAD?;ERROR?;TYPE?;SOURCE?;"
+    ":LOOP 2:SETPT?;RATE?;RAMP?;RANGE?;HTRREAD?;ERROR?;TYPE?;SOURCE?;"
+    ":CONTROL?"
+)
+
+TEMPERATURES_AB_QUERY = (
+    "INPUT? A;:INPUT A:UNITS?;ALARM?;"
+    ":INPUT? B;:INPUT B:UNITS?;ALARM?"
+)
+
 MEASUREMENT_TEMPERATURE_QUERY = "INPUT? B"
+
+
+def status_query_for_loop(loop: int = 1) -> str:
+    """构造单回路状态查询；Loop 1 保持与历史 ``STATUS_QUERY`` 逐字一致。"""
+
+    _validate_loop_number(loop)
+    if loop == 1:
+        return STATUS_QUERY
+    return (
+        "INPUT? A;:INPUT A:UNITS?;ALARM?;"
+        ":INPUT? B;:INPUT B:UNITS?;ALARM?;"
+        f":LOOP {loop}:SETPT?;RATE?;RAMP?;RANGE?;HTRREAD?;ERROR?;TYPE?;SOURCE?;"
+        ":CONTROL?"
+    )
 
 
 def identify(transport: QueryTransport) -> tuple[str, str, str, str]:
@@ -112,10 +176,10 @@ def identify(transport: QueryTransport) -> tuple[str, str, str, str]:
     return padded[0], padded[1], padded[2], padded[3]
 
 
-def read_status(transport: QueryTransport) -> ControllerReadback:
-    """用一条复合查询读取 A、B 和 Loop 1，确保各值来自同一轮采样。"""
+def read_status(transport: QueryTransport, *, loop: int = 1) -> ControllerReadback:
+    """用一条复合查询读取 A、B 和指定单回路，确保各值来自同一轮采样。"""
 
-    response = transport.query(STATUS_QUERY)
+    response = transport.query(status_query_for_loop(loop))
     parts = [part.strip() for part in response.strip().rstrip(";").split(";")]
     if len(parts) != 15:
         raise CryoconProtocolError(
@@ -128,15 +192,39 @@ def read_status(transport: QueryTransport) -> ControllerReadback:
         temperature_b=_number(parts[3], "input B temperature"),
         unit_b=parts[4],
         alarm_b=parts[5],
-        setpoint=_number(parts[6], "loop setpoint"),
-        rate=_number(parts[7], "loop ramp rate"),
+        setpoint=_number(parts[6], f"loop {loop} setpoint"),
+        rate=_number(parts[7], f"loop {loop} ramp rate"),
         ramping=parts[8],
         heater_range=parts[9],
-        heater_output_percent=_number(parts[10], "heater output"),
+        heater_output_percent=_number(parts[10], f"loop {loop} heater output"),
         loop_error=parts[11],
         loop_type=parts[12],
         loop_source=parts[13],
         control=parts[14],
+    )
+
+
+def read_dual_loop_status(transport: QueryTransport) -> DualLoopReadback:
+    """用一条 23 字段复合查询同时读取 A、B、Loop 1、Loop 2 与 CONTROL 状态。"""
+
+    response = transport.query(DUAL_LOOP_STATUS_QUERY)
+    parts = [part.strip() for part in response.strip().rstrip(";").split(";")]
+    if len(parts) != 23:
+        raise CryoconProtocolError(
+            f"Dual-loop status query returned {len(parts)} fields instead of 23: {response!r}"
+        )
+    loop_1 = _parse_loop_fields(1, parts[6:14])
+    loop_2 = _parse_loop_fields(2, parts[14:22])
+    return DualLoopReadback(
+        temperature_a=_number(parts[0], "input A temperature"),
+        unit_a=parts[1],
+        alarm_a=parts[2],
+        temperature_b=_number(parts[3], "input B temperature"),
+        unit_b=parts[4],
+        alarm_b=parts[5],
+        loop_1=loop_1,
+        loop_2=loop_2,
+        control=parts[22],
     )
 
 
@@ -154,6 +242,23 @@ def read_temperature(
     return _number(parts[0], f"input {channel} temperature"), parts[1], parts[2]
 
 
+def read_temperatures_ab(
+    transport: QueryTransport,
+) -> dict[str, tuple[float, str, str]]:
+    """双回路 Hold 前用一条复合查询即时读取 A、B 两个输入通道的温度、单位与报警。"""
+
+    response = transport.query(TEMPERATURES_AB_QUERY)
+    parts = [part.strip() for part in response.strip().rstrip(";").split(";")]
+    if len(parts) != 6:
+        raise CryoconProtocolError(
+            f"Input A/B query returned {len(parts)} fields instead of 6: {response!r}"
+        )
+    return {
+        "A": (_number(parts[0], "input A temperature"), parts[1], parts[2]),
+        "B": (_number(parts[3], "input B temperature"), parts[4], parts[5]),
+    }
+
+
 def read_measurement_temperature(transport: QueryTransport, channel: str) -> float:
     """只读取写实验数据所需的主温度，不附带状态或其他通道查询。"""
 
@@ -167,18 +272,21 @@ def write_number_and_readback(
     transport: QueryTransport,
     parameter: str,
     value: float,
+    *,
+    loop: int = 1,
 ) -> float:
     """写入浮点参数并立即查询同一参数，返回仪表实际值。"""
 
+    _validate_loop_number(loop)
     rendered = f"{float(value):.12g}"
     response = transport.query(
-        f"LOOP 1:{parameter} {rendered};{parameter}?"
+        f"LOOP {loop}:{parameter} {rendered};{parameter}?"
     )
-    actual = _number(response, f"{parameter} readback")
+    actual = _number(response, f"LOOP {loop} {parameter} readback")
     tolerance = max(1e-9, abs(float(value)) * 1e-7)
     if not math.isclose(actual, float(value), rel_tol=1e-7, abs_tol=tolerance):
         raise CryoconProtocolError(
-            f"{parameter} readback {actual!r} does not match requested {value!r}"
+            f"LOOP {loop} {parameter} readback {actual!r} does not match requested {value!r}"
         )
     return actual
 
@@ -187,16 +295,21 @@ def write_enum_and_readback(
     transport: QueryTransport,
     parameter: str,
     value: str,
+    *,
+    loop: int = 1,
 ) -> str:
     """写入枚举参数并立即查询，大小写无关地验证回读。"""
 
+    _validate_loop_number(loop)
     requested = str(value).strip().upper()
     response = transport.query(
-        f"LOOP 1:{parameter} {requested};{parameter}?"
+        f"LOOP {loop}:{parameter} {requested};{parameter}?"
     ).strip().rstrip(";").strip()
-    if response.upper() != requested:
+    normalized_response = _normalize_range_token(response) if parameter.upper() == "RANGE" else response.upper()
+    normalized_requested = _normalize_range_token(requested) if parameter.upper() == "RANGE" else requested
+    if normalized_response != normalized_requested:
         raise CryoconProtocolError(
-            f"{parameter} readback {response!r} does not match requested {requested!r}"
+            f"LOOP {loop} {parameter} readback {response!r} does not match requested {requested!r}"
         )
     return response
 
@@ -255,6 +368,30 @@ def write_channel_sensor_index_and_readback(
             f"Input {ch} {command_key} readback {response!r} does not match requested {index}"
         )
     return actual
+
+
+def _parse_loop_fields(loop: int, fields: list[str]) -> LoopReadback:
+    return LoopReadback(
+        loop=loop,
+        setpoint=_number(fields[0], f"loop {loop} setpoint"),
+        rate=_number(fields[1], f"loop {loop} ramp rate"),
+        ramping=fields[2],
+        heater_range=fields[3],
+        heater_output_percent=_number(fields[4], f"loop {loop} heater output"),
+        loop_error=fields[5],
+        loop_type=fields[6],
+        loop_source=fields[7],
+    )
+
+
+def _validate_loop_number(loop: int) -> None:
+    if isinstance(loop, bool) or loop not in (1, 2):
+        raise ValueError(f"Unsupported Cryo-con loop number: {loop!r}")
+
+
+def _normalize_range_token(token: str) -> str:
+    upper = str(token).strip().upper()
+    return "HI" if upper == "HIGH" else upper
 
 
 def _number(value: Any, label: str) -> float:

@@ -2,8 +2,8 @@
 # list with the PID zones already validated for that cryostat.
 zones = []
 
-# Each zone uses an inclusive upper temperature boundary. The final boundary must
-# cover the controller panel's configured maximum temperature.
+# Each zone uses an inclusive upper temperature boundary (<=). The final boundary
+# must cover the controller panel's configured maximum temperature.
 #
 # [[zones]]
 # temperature = 10.0
@@ -11,3 +11,27 @@ zones = []
 # i_gain = 0.0
 # d_gain = 0.0
 # heater_range = "LOW" # Optional: LOW, MID, or HI.
+#
+# ------------------------------------------------------------------------------
+# Optional 24C Dual-Loop Linked Control (used when Controller Model = "24C";
+# ignored/not needed when Controller Model = "22C"):
+#
+# primary_loop = 2 # Optional on 24C (default 2: Loop 2 = primary, Loop 1 = linked)
+#
+# 1) Secondary (linked) loop PID table, indexed by the linked loop's own target:
+# [[linked_pid_zones]]
+# temperature = 10.0
+# p_gain = 0.0
+# i_gain = 0.0
+# d_gain = 0.0
+# # heater_range = "LOW" # Optional: LOW, MID, or HI.
+#
+# 2) Piecewise target formula for the linked loop, indexed by primary target x:
+#    Allowed syntax: x, finite numbers, parentheses, + - * /, min(), max().
+# [[linked_target_zones]]
+# temperature = 310.0          # x <= 310.0 K
+# formula = "x - 0.5"
+#
+# [[linked_target_zones]]
+# temperature = 400.0          # x > 310.0 K (310.0 < x <= 400.0 K)
+# formula = "290"
