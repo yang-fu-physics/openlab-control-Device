@@ -1,0 +1,241 @@
+id = "kelvinion"
+name = "MultiFields Kelvinion Temperature Controller"
+version = "0.1.0.dev1"
+api_version = "4"
+core_requires = ">=0.19,<0.21"
+backend = "backend:KelvinionController"
+setup_widget = "frontend:SetupWidget"
+kinds = ["temperature"]
+
+[[config_fields]]
+id = "output_2_enabled"
+label = "Enable Output 2 (Heater B)"
+type = "boolean"
+default = true
+
+[[config_fields]]
+id = "baud_rate"
+label = "USB Serial Baud Rate"
+type = "choice"
+default = "115200"
+options = ["115200", "9600", "19200", "38400", "57600"]
+
+[[config_fields]]
+id = "visa_timeout_ms"
+label = "VISA I/O Timeout (ms)"
+type = "integer"
+default = 1000
+min = 1
+max = 9999
+
+# UNVERIFIED_PROTOCOL (HV-01): Manual Ch. 5 lists no reply for [SET:...], while AppNote 07
+# lists ACK frames. Leave false unless real hardware replies to SET commands.
+[[config_fields]]
+id = "write_expects_ack"
+label = "SET Returns ACK Frame [HV-01]"
+type = "boolean"
+default = false
+
+# UNVERIFIED_PROTOCOL (HV-02): Manual p.96 shows [SET:SETP:A:300K] with trailing 'K', whereas
+# other temperature commands omit 'K'. Disable if real hardware rejects the 'K' suffix.
+[[config_fields]]
+id = "setpoint_unit_suffix"
+label = "Append 'K' Suffix on SET:SETP [HV-02]"
+type = "boolean"
+default = true
+
+[discovery]
+identity_pattern = '(?i)^\[?MultiFields Technologies\s*,\s*Kelvinion(?:\s+Mini)?\s*,'
+
+[[controls]]
+id = "output_1"
+label = "Output 1 (Heater A)"
+
+[[controls]]
+id = "output_2"
+label = "Output 2 (Heater B)"
+
+[[panels]]
+id = "control_1"
+label = "Output 1 (A)"
+template = "controller"
+control = "output_1"
+reading_options = [
+    "temp_a",
+    "temp_b",
+    "temp_c",
+    "temp_d",
+    "temp_e",
+    "temp_f",
+    "temp_g",
+    "temp_h",
+]
+default_reading = "temp_a"
+setpoint_decimals = 2
+rate_decimals = 2
+min_value = 1.8
+max_value = 400.0
+default_rate_per_minute = 1.0
+max_rate_per_minute = 10.0
+stability_tolerance = 0.01
+stability_max_slope_per_minute = 0.01
+stability_dwell_seconds = 5.0
+stability_timeout_seconds = 1800.0
+stability_window_seconds = 5.0
+
+[[panels]]
+id = "control_2"
+label = "Output 2 (B)"
+template = "controller"
+control = "output_2"
+reading_options = [
+    "temp_a",
+    "temp_b",
+    "temp_c",
+    "temp_d",
+    "temp_e",
+    "temp_f",
+    "temp_g",
+    "temp_h",
+]
+default_reading = "temp_b"
+setpoint_decimals = 2
+rate_decimals = 2
+min_value = 1.8
+max_value = 400.0
+default_rate_per_minute = 1.0
+max_rate_per_minute = 10.0
+stability_tolerance = 0.01
+stability_max_slope_per_minute = 0.01
+stability_dwell_seconds = 5.0
+stability_timeout_seconds = 1800.0
+stability_window_seconds = 5.0
+
+[[panels]]
+id = "temperatures_ad"
+label = "Temperatures A-D"
+template = "readout_grid"
+readings = ["temp_a", "temp_b", "temp_c", "temp_d"]
+
+[[panels]]
+id = "temperatures_eh"
+label = "Temperatures E-H"
+template = "readout_grid"
+readings = ["temp_e", "temp_f", "temp_g", "temp_h"]
+
+[[panels]]
+id = "loop_1"
+label = "Output 1 Status"
+template = "readout_grid"
+readings = [
+    "loop_1_output",
+    "loop_1_range",
+    "loop_1_setpoint",
+    "loop_1_ramping",
+]
+
+[[panels]]
+id = "loop_2"
+label = "Output 2 Status"
+template = "readout_grid"
+readings = [
+    "loop_2_output",
+    "loop_2_range",
+    "loop_2_setpoint",
+    "loop_2_ramping",
+]
+
+[[panels]]
+id = "output_modes"
+label = "Output Mode & Zone"
+template = "readout_grid"
+readings = [
+    "loop_1_mode",
+    "loop_1_zone",
+    "loop_2_mode",
+    "loop_2_zone",
+]
+
+[readings.temp_a]
+label = "Temp A"
+unit = "K"
+decimals = 3
+
+[readings.temp_b]
+label = "Temp B"
+unit = "K"
+decimals = 3
+
+[readings.temp_c]
+label = "Temp C"
+unit = "K"
+decimals = 3
+
+[readings.temp_d]
+label = "Temp D"
+unit = "K"
+decimals = 3
+
+[readings.temp_e]
+label = "Temp E"
+unit = "K"
+decimals = 3
+
+[readings.temp_f]
+label = "Temp F"
+unit = "K"
+decimals = 3
+
+[readings.temp_g]
+label = "Temp G"
+unit = "K"
+decimals = 3
+
+[readings.temp_h]
+label = "Temp H"
+unit = "K"
+decimals = 3
+
+[readings.loop_1_output]
+label = "Output 1 Power"
+unit = "%"
+decimals = 1
+
+[readings.loop_1_range]
+label = "Output 1 Range"
+
+[readings.loop_1_setpoint]
+label = "Output 1 Setpoint"
+unit = "K"
+decimals = 3
+
+[readings.loop_1_ramping]
+label = "Output 1 Ramping"
+
+[readings.loop_1_mode]
+label = "Output 1 Mode"
+
+[readings.loop_1_zone]
+label = "Output 1 Zone"
+
+[readings.loop_2_output]
+label = "Output 2 Power"
+unit = "%"
+decimals = 1
+
+[readings.loop_2_range]
+label = "Output 2 Range"
+
+[readings.loop_2_setpoint]
+label = "Output 2 Setpoint"
+unit = "K"
+decimals = 3
+
+[readings.loop_2_ramping]
+label = "Output 2 Ramping"
+
+[readings.loop_2_mode]
+label = "Output 2 Mode"
+
+[readings.loop_2_zone]
+label = "Output 2 Zone"

@@ -11,6 +11,7 @@
 | `lakeshore340` | Lake Shore Model 340 温控仪（`0.2.2.dev1`；Temp A/B、Loop 1/2、**Instrument Setup** 按需切换传感器曲线） | GPIB (VISA) | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
 | `zlan_6408_compressor` | ZLAN 6408I（4 路）/ 6842（8 路）压缩机继电器控制与 DI/DO 状态 | Modbus TCP | **已实机验证（2026-11-05）**（仅限已测接线与配置） |
 | `cryocon_22c_24c` | Cryo-con 22C / 24C 温控仪（`0.3.1.dev2`；Loop 1 主控可选 A/B，含边界 `<=` 独立 PID 表、**Instrument Setup** 按需切换曲线与软件 PID 表） | VISA（含 USB 虚拟串口） | **22C 现场读写与升温响应验证（2026-11-22）**；24C 未验证 |
+| `kelvinion` | MultiFields Technologies Kelvinion / Mini 温控仪（`0.1.0.dev1`；独立双回路 Output 1/2、A–H 通道、340 风格状态、**Instrument Setup** 传感器/输出/Zone 配置） | USB 虚拟串口（VISA 115200 8N1；可选 LAN；暂禁用 GPIB） | **空载协议初测 + 端到端只读验收通过（2026-11-27，V2.2.6b6）**；有负载闭环控温与真机写入待验证（详见 [`HARDWARE_TEST_CHECKLIST.md`](instruments/kelvinion/HARDWARE_TEST_CHECKLIST.md)） |
 | `example_controller` | 温场控制教学骨架（默认拒绝连接真机） | 无 | 仅作开发模板 |
 | `example_monitor` | 只读监控教学骨架（默认拒绝连接真机） | 无 | 仅作开发模板 |
 
