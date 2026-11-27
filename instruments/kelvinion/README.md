@@ -1,7 +1,7 @@
 # MultiFields Kelvinion Temperature Controller
 
-> **实机验证状态：已完成空载串口协议初测（2026-11-27，标准 Kelvinion S/N 1005，固件 `V2.2.6b6`，USB CH343 `COM6 / ASRL6::INSTR`，115200 8N1 无流控，CRLF）；尚未完成有负载/闭环控温与 Setup 写入验证。**
-> 接入真实低温系统前，**请务必先按同目录 [`HARDWARE_TEST_CHECKLIST.md`](HARDWARE_TEST_CHECKLIST.md) 完成剩余有负载/闭环验证项**（源码未定项以 `UNVERIFIED_PROTOCOL (HV-XX)` 标注）。
+> **实机验证状态：已完成空载串口协议初测与端到端只读验收（2026-11-27，标准 Kelvinion S/N 1005，固件 `V2.2.6b6`，USB CH343 `COM6 / ASRL6::INSTR`，115200 8N1 无流控，CRLF；涵盖 Scanner 配置、Setup 三页只读加载、`RuntimeService` 10 s Wait 运行归档及 2133 条连续只读查询零错位）；尚未完成有负载闭环控温、真机写入（设温 / Hold / Setup Apply & Save）与人工前面板逐项核对。**
+> 接入真实低温系统前，**请务必先按同目录 [`HARDWARE_TEST_CHECKLIST.md`](HARDWARE_TEST_CHECKLIST.md) 完成剩余有负载/闭环与写入验证项**（源码未定项以 `UNVERIFIED_PROTOCOL (HV-XX)` 标注）。
 
 ## 功能范围与当前约定
 
@@ -22,7 +22,7 @@
 1. 将整个 `instruments/kelvinion/` 目录复制到主程序的 `OpenLabControl/system_instruments/kelvinion/`。
 2. 用 USB-B 数据线连接 Kelvinion 与主机，在 Windows 设备管理器中确认 CH343 虚拟串口（COM 口）及 NI-VISA 正常识别，并在仪表面板确认通讯方式为串口（115200 bps）。
 3. 关闭 OpenLab Control 主程序，运行 **Instrument Scanner**：
-   - 在 **VISA Resources** 页扫描串口；若该 `ASRL<n>::INSTR` 显示 *No IDN response* 属正常现象（通用扫描发送 `*IDN?`，Kelvinion 需要方括号帧 `[*IDN?]`，见 `HV-08`），直接手动选用对应的 `ASRL<n>::INSTR`。
+   - 在 **VISA Resources** 页扫描串口（`V2.2.6b6` 实测裸 `*IDN?` 与 `[*IDN?]` 均可响应；若其他固件显示 *No IDN response*，直接手动选用对应的 `ASRL<n>::INSTR`）。
    - 在 **MultiFields Kelvinion Temperature Controller** 页添加实例：
      - 核对 **USB Serial Baud Rate**（默认 `115200`）与 **VISA I/O Timeout (ms)**（默认 `1000`）；
      - 核对 `Enable Output 2 (Heater B)`（双回路保持勾选，Mini 或单回路取消勾选）；
